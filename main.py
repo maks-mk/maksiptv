@@ -6,17 +6,25 @@ import json
 import urllib.request
 import logging
 from datetime import datetime
+"""# Указываем путь к libvlc, если он не в стандартном месте
+if getattr(sys, 'frozen', False):
+    # если PyInstaller-сборка, добавляем путь
+    os.environ["LD_LIBRARY_PATH"] = "/usr/lib/x86_64-linux-gnu/"
+"""
 import vlc
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                               QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, 
                               QSlider, QStyle, QToolBar, QAction, QStatusBar, 
                               QProgressBar, QMenu, QSystemTrayIcon, QFileDialog,
-                              QInputDialog, QListWidgetItem, QWidgetAction, QGraphicsOpacityEffect)
+                              QInputDialog, QListWidgetItem, QWidgetAction, QGraphicsOpacityEffect,
+                              QMessageBox)
 from PyQt5.QtCore import Qt, QTimer, QSize, pyqtSignal, QThread, QPoint, QByteArray
 from PyQt5.QtGui import QIcon, QFont, QPalette, QColor, QPixmap, QImage, QCursor
 from PyQt5.QtWidgets import (QTreeWidget, QTreeWidgetItem, QFrame, QSplitter, 
                              QListWidget, QMenuBar, QMessageBox, QDialog, QSizePolicy,
                              QTextBrowser, QStackedWidget, QHeaderView, QTreeWidgetItemIterator)
+#import sys
+import platform
 
 # Определение потоковых классов для загрузки
 class DownloadThread(QThread):
@@ -432,12 +440,33 @@ class IPTVPlayer(QMainWindow):
         self.current_playlist = self.config.get("current_playlist", self.recent_playlists[0] if self.recent_playlists else "IPTV_SHARED.m3u")
         self.temp_playlist_path = None
         
+        # Счетчик попыток переподключения
+        self.retry_count = 0
+        
         # Инициализация VLC
+        vlc_args = [
+            "--no-video-title-show",   # Убираем текст канала поверх видео
+            "--network-caching=1500",  # Небольшая буферизация для стабильности стримов
+            "--file-caching=1500",
+            "--live-caching=1500",
+            "--sout-mux-caching=1500",
+            "--http-reconnect",
+            "--rtsp-tcp",
+        ]
+
         if sys.platform.startswith('linux'):
+            # На Linux используем специальную опцию
             self.instance = vlc.Instance("--no-xlib")
         else:
-            self.instance = vlc.Instance()
-            
+            win_version = platform.release()
+            if win_version in ("7", "8"):
+                # Для Windows 7/8 старое железо — Direct3D9
+                vlc_args.append("--vout=direct3d9")
+            else:
+                # Для Windows 10/11 современное железо — Direct3D11
+                vlc_args.append("--vout=direct3d11")
+            self.instance = vlc.Instance(*vlc_args)
+
         self.media_player = self.instance.media_player_new()
         
         # Таймер для обновления состояния плеера
@@ -451,6 +480,7 @@ class IPTVPlayer(QMainWindow):
         self.event_manager.event_attach(vlc.EventType.MediaPlayerPaused, self.media_paused)
         self.event_manager.event_attach(vlc.EventType.MediaPlayerStopped, self.media_stopped)
         self.event_manager.event_attach(vlc.EventType.MediaPlayerEncounteredError, self.handle_error)
+        self.event_manager.event_attach(vlc.EventType.MediaPlayerEndReached, self.media_stopped)
         
         self.load_playlist()
         
@@ -470,11 +500,19 @@ class IPTVPlayer(QMainWindow):
         if last_channel is not None:
             QTimer.singleShot(1000, lambda: self.restore_last_channel(last_channel))
         
-        # Настройка системного трея
+         
+        # Показываем приложение
+        # Настройка атрибутов окна для плавного старта
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WA_StaticContents, True)
+        self.show()
+        
+         # Настройка системного трея
         self.setup_tray()
         
-        # Показываем приложение
-        self.show()
+        # Обновление встроенного плейлиста при запуске
+        QTimer.singleShot(0, self.update_playlist_from_url)
         
     def init_ui(self):
         central_widget = QWidget()
@@ -554,21 +592,21 @@ class IPTVPlayer(QMainWindow):
         self.refresh_button.clicked.connect(self.reload_playlist)
         
         self.update_button = QPushButton()
-        self.update_button.setIcon(self.style().standardIcon(QStyle.SP_DriveNetIcon))
+        self.update_button.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))  # Иконка компьютера для сети
         self.update_button.setIconSize(icon_size)
         self.update_button.setFixedSize(button_size)
         self.update_button.setToolTip("Обновить из интернета")
         self.update_button.clicked.connect(self.update_playlist_from_url)
         
         self.favorites_button = QPushButton()
-        self.favorites_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.favorites_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))  # Иконка звезды/избранного
         self.favorites_button.setIconSize(icon_size)
         self.favorites_button.setFixedSize(button_size)
         self.favorites_button.setToolTip("Избранное")
         self.favorites_button.clicked.connect(self.toggle_favorites)
         
         self.hidden_button = QPushButton()
-        self.hidden_button.setIcon(self.style().standardIcon(QStyle.SP_DialogNoButton))
+        self.hidden_button.setIcon(self.style().standardIcon(QStyle.SP_DialogHelpButton))  # Иконка для скрытых элементов
         self.hidden_button.setIconSize(icon_size)
         self.hidden_button.setFixedSize(button_size)
         self.hidden_button.setToolTip("Скрытые каналы")
@@ -675,7 +713,7 @@ class IPTVPlayer(QMainWindow):
         self.stop_button.clicked.connect(self.stop)
         
         self.screenshot_button = QPushButton()
-        self.screenshot_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.screenshot_button.setIcon(self.style().standardIcon(QStyle.SP_DesktopIcon))
         self.screenshot_button.setIconSize(icon_size)
         self.screenshot_button.setFixedSize(button_size)
         self.screenshot_button.setToolTip("Сделать снимок экрана")
@@ -766,32 +804,16 @@ class IPTVPlayer(QMainWindow):
         # Загружаем плейлист
         self.fill_channel_list()
         
-        # Настраиваем системный трей
-        self.setup_tray()
+        # Безопасная установка окна для воспроизведения
+        win_id = self.video_frame.winId()
+        if sys.platform.startswith("linux"):
+            self.media_player.set_xwindow(int(win_id))
+        elif sys.platform == "win32":
+            self.media_player.set_hwnd(win_id)
+        elif sys.platform == "darwin":
+            self.media_player.set_nsobject(int(win_id))
         
-        # Настраиваем VLC
-        self.instance = vlc.Instance('--no-xlib --quiet')  # Инициализация VLC без X11
-        
-        # Создаем проигрыватель
-        self.media_player = self.instance.media_player_new()
-        
-        if sys.platform == "linux":  # для Linux
-            self.media_player.set_xwindow(self.video_frame.winId())
-        elif sys.platform == "win32":  # для Windows
-            self.media_player.set_hwnd(self.video_frame.winId())
-        elif sys.platform == "darwin":  # для MacOS
-            self.media_player.set_nsobject(int(self.video_frame.winId()))
-            
-        # Настраиваем обработчики событий VLC
-        events = self.media_player.event_manager()
-        events.event_attach(vlc.EventType.MediaPlayerEndReached, self.handle_error)
-        events.event_attach(vlc.EventType.MediaPlayerPlaying, self.media_playing)
-        events.event_attach(vlc.EventType.MediaPlayerPaused, self.media_paused)
-        events.event_attach(vlc.EventType.MediaPlayerStopped, self.media_stopped)
-        events.event_attach(vlc.EventType.MediaPlayerEncounteredError, self.handle_error)
-        
-        # Настраиваем таймер для обновления интерфейса
-        self.timer.timeout.connect(self.update_ui)
+        # Запускаем таймер обновления UI
         self.timer.start(1000)  # Обновление каждую секунду
         
         # Если был сохранен последний канал, выбираем его автоматически
@@ -911,42 +933,76 @@ class IPTVPlayer(QMainWindow):
                     except:
                         pass
             
-            # Формируем отображаемое имя
+            # Формируем отображаемое имя и стиль
             if is_current:
-                display_name = f"[>] {display_name}"
-                color = "#00FF00"
-            else:
-                color = "white"
-
-            # Создаём QLabel с нужным стилем и эффектом наведения
-            label = QLabel(display_name)
-            label.setStyleSheet(f"""
-                QLabel {{
-                    color: {color};
-                    padding: 4px 10px;
-                }}
-                QLabel:hover {{
-                    background-color: #1E90FF;
-                }}
+                # Создаем виджет с более заметным выделением для текущего плейлиста
+                container = QWidget()
+                container_layout = QHBoxLayout(container)
+                container_layout.setContentsMargins(0, 0, 0, 0)
+                container_layout.setSpacing(5)
+                
+                # Добавляем иконку "воспроизведения" слева
+                icon_label = QLabel()
+                icon_label.setPixmap(self.style().standardIcon(QStyle.SP_MediaPlay).pixmap(QSize(12, 12)))
+                container_layout.addWidget(icon_label)
+                
+                # Добавляем название плейлиста с выделением
+                title_label = QLabel(display_name)
+                title_label.setStyleSheet("""
+                    QLabel {
+                        color: #4CAF50;
+                        font-weight: bold;
+                        padding: 4px 10px;
+                        background-color: rgba(76, 175, 80, 0.2);
+                        border-radius: 4px;
+                    }
+                    QLabel:hover {
+                        background-color: rgba(76, 175, 80, 0.3);
+                    }
                 """)
-
-            # Заворачиваем в QWidgetAction
-            action = QWidgetAction(self)
-            action.setDefaultWidget(label)
-
-            # Сохраняем данные плейлиста в атрибуте QLabel
-            label.playlist_path = playlist
+                container_layout.addWidget(title_label)
+                container_layout.addStretch()
+                
+                # Добавляем виджет в меню
+                action = QWidgetAction(self)
+                action.setDefaultWidget(container)
+                
+                # Сохраняем данные плейлиста
+                container.playlist_path = playlist
+                title_label.playlist_path = playlist
+                icon_label.playlist_path = playlist
+            else:
+                # Создаем обычный элемент меню для не выбранных плейлистов
+                label = QLabel(display_name)
+                label.setStyleSheet("""
+                    QLabel {
+                        color: white;
+                        padding: 4px 10px;
+                        margin-left: 17px; /* отступ для выравнивания с текущим плейлистом */
+                    }
+                    QLabel:hover {
+                        background-color: rgba(30, 144, 255, 0.3);
+                        border-radius: 4px;
+                    }
+                """)
+                
+                # Заворачиваем в QWidgetAction
+                action = QWidgetAction(self)
+                action.setDefaultWidget(label)
+                
+                # Сохраняем данные плейлиста
+                label.playlist_path = playlist
             
-            # Обработка левого и правого клика
-            def mousePressEvent(event, label=label):
+            # Определяем функцию для обработки нажатий мыши
+            def mousePressEvent(event, widget=action.defaultWidget()):
                 if event.button() == Qt.LeftButton:
-                    self.open_recent_playlist(label.playlist_path)
+                    self.open_recent_playlist(widget.playlist_path)
                 elif event.button() == Qt.RightButton:
-                    self.show_recent_playlist_context_menu(event.globalPos(), label.playlist_path)
+                    self.show_recent_playlist_context_menu(event.globalPos(), widget.playlist_path)
             
             # Заменяем стандартное событие нажатия мыши
-            label.mousePressEvent = mousePressEvent
-
+            action.defaultWidget().mousePressEvent = mousePressEvent
+            
             self.recent_menu.addAction(action)
 
         # Добавляем разделитель и пункт "Очистить список"
@@ -1129,8 +1185,19 @@ class IPTVPlayer(QMainWindow):
 
     def exit_app(self):
         """Выход из приложения"""
-        self.save_config()
-        QApplication.quit()
+        try:
+            # Сначала сохраняем конфигурацию
+            self.save_config()
+            
+            # Затем выполняем очистку ресурсов
+            # cleanup будет вызван также через aboutToQuit
+            logging.info("Выход из приложения...")
+            
+            # Закрываем приложение
+            QApplication.quit()
+        except Exception as e:
+            logging.error(f"Ошибка при выходе из приложения: {e}")
+            QApplication.quit()
         
     def show_all_favorites(self):
         """Показывает все избранные каналы"""
@@ -1223,7 +1290,7 @@ class IPTVPlayer(QMainWindow):
         """Показывает информацию о программе"""
         QMessageBox.about(self, "О программе",
                          "<h3>MaksIPTV Плеер</h3>"
-                         "<p>Версия 0.11.42</p>"
+                         "<p>Версия 0.11.44</p>"
                          "<p>Современный плеер для просмотра IPTV каналов из M3U плейлиста</p>"
                          "<p>© 2025</p>")
 
@@ -1453,7 +1520,10 @@ class IPTVPlayer(QMainWindow):
         if channel_index < 0 or channel_index >= len(self.channels):
             return
         
-        # Останавливаем текущее воспроизведение, если оно есть
+        # Сброс счетчика попыток при старте нового канала
+        self.retry_count = 0
+        
+        # Останавливаем текущее воспроизведение и освобождаем ресурсы
         self.stop()
         
         # Запоминаем индекс текущего канала
@@ -1496,9 +1566,18 @@ class IPTVPlayer(QMainWindow):
             media.add_option(":live-caching=1000")
             media.add_option(":sout-mux-caching=1000")
             
+            # Дополнительные опции для стабильности
+            media.add_option(":http-reconnect")
+            media.add_option(":rtsp-tcp")
+            media.add_option(":no-video-title-show")
+            
             # Устанавливаем медиа в плеер и воспроизводим
             self.media_player.set_media(media)
             self.play()
+            
+            # Сбрасываем счетчик попыток восстановления видео
+            if hasattr(self, 'video_retry_count'):
+                delattr(self, 'video_retry_count')
             
             # Обновляем интерфейс
             self.update_ui()
@@ -1534,11 +1613,94 @@ class IPTVPlayer(QMainWindow):
 
     def stop(self):
         """Остановить воспроизведение"""
-        self.media_player.stop()
-        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.info_label.setText("Остановлено")
-        self.channel_name_label.setText("Нет воспроизведения")
-        self.statusbar_label.setText("Остановлено")
+        try:
+            # Останавливаем воспроизведение
+            if self.media_player.is_playing():
+                self.media_player.stop()
+            
+            # Освобождаем медиа-ресурсы
+            current_media = self.media_player.get_media()
+            if current_media:
+                current_media.release()
+                
+            self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.info_label.setText("Остановлено")
+            self.channel_name_label.setText("Нет воспроизведения")
+            self.statusbar_label.setText("Остановлено")
+        except Exception as e:
+            logging.error(f"Ошибка при остановке воспроизведения: {e}")
+            # Обновляем интерфейс даже при ошибке
+            try:
+                self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+                self.info_label.setText("Остановлено")
+                self.channel_name_label.setText("Нет воспроизведения")
+                self.statusbar_label.setText("Остановлено")
+            except:
+                pass
+    
+    def cleanup(self):
+        """Освобождает ресурсы при выходе из приложения"""
+        try:
+            # Останавливаем таймер
+            if hasattr(self, 'timer') and self.timer.isActive():
+                self.timer.stop()
+                
+            # Сбрасываем обработчики событий медиаплеера
+            if hasattr(self, 'event_manager'):
+                try:
+                    self.event_manager.event_detach(vlc.EventType.MediaPlayerPlaying)
+                    self.event_manager.event_detach(vlc.EventType.MediaPlayerPaused)
+                    self.event_manager.event_detach(vlc.EventType.MediaPlayerStopped)
+                    self.event_manager.event_detach(vlc.EventType.MediaPlayerEncounteredError)
+                    self.event_manager.event_detach(vlc.EventType.MediaPlayerEndReached)
+                except:
+                    pass
+            
+            # Безопасно останавливаем воспроизведение
+            if hasattr(self, 'media_player'):
+                try:
+                    # Получаем текущее медиа перед остановкой плеера
+                    current_media = self.media_player.get_media()
+                    
+                    # Останавливаем воспроизведение
+                    if self.media_player.is_playing():
+                        self.media_player.pause()
+                        time.sleep(0.1)  # Даем время на обработку паузы
+                        
+                    self.media_player.stop()
+                    time.sleep(0.1)  # Даем время на обработку остановки
+                    
+                    # Освобождаем медиа отдельно
+                    if current_media:
+                        current_media.release()
+                except Exception as e:
+                    logging.error(f"Ошибка при остановке медиаплеера: {e}")
+                
+                # Освобождаем медиаплеер
+                try:
+                    self.media_player.release()
+                except Exception as e:
+                    logging.error(f"Ошибка при освобождении медиаплеера: {e}")
+            
+            # Освобождаем инстанс VLC в последнюю очередь
+            if hasattr(self, 'instance'):
+                try:
+                    self.instance.release()
+                except Exception as e:
+                    logging.error(f"Ошибка при освобождении инстанса VLC: {e}")
+                
+            # Удаляем временные файлы
+            if hasattr(self, 'temp_playlist_path') and self.temp_playlist_path and self.temp_playlist_path.startswith("temp_"):
+                try:
+                    if os.path.exists(self.temp_playlist_path):
+                        os.remove(self.temp_playlist_path)
+                except Exception as e:
+                    logging.error(f"Ошибка при удалении временного файла: {e}")
+                    
+            logging.info("Ресурсы успешно освобождены при выходе")
+                    
+        except Exception as e:
+            logging.error(f"Критическая ошибка при освобождении ресурсов: {e}", exc_info=True)
 
     def toggle_fullscreen(self):
         """Переключение полноэкранного режима"""
@@ -1635,52 +1797,103 @@ class IPTVPlayer(QMainWindow):
     def update_ui(self):
         """Обновление UI состояния"""
         # Обновляем состояние кнопки воспроизведения
-        if self.media_player.is_playing():
+        is_playing = self.media_player.is_playing()
+        has_media = self.media_player.get_media() is not None
+        
+        if is_playing:
             self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
         else:
             self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
             
-        # Если медиаплеер в состоянии воспроизведения, но в буферизации
+        # Получаем текущее состояние медиаплеера
         state = self.media_player.get_state()
-        if state == vlc.State.Playing and not self.media_player.is_playing():
+        
+        # Обрабатываем разные состояния
+        if state == vlc.State.Opening:
+            self.info_label.setText("Открытие медиа...")
+            self.statusbar_label.setText("Открытие медиа...")
+            self.progress_bar.setVisible(True)
+        elif state == vlc.State.Buffering:
             self.info_label.setText("Буферизация...")
             self.statusbar_label.setText("Буферизация...")
+            self.progress_bar.setVisible(True)
+        elif state == vlc.State.Playing and is_playing:
+            self.progress_bar.setVisible(False)
+            if self.current_channel_index >= 0:
+                channel_name = self.channels[self.current_channel_index]['name']
+                self.info_label.setText(f"Воспроизведение: {channel_name}")
+                self.statusbar_label.setText(f"Воспроизведение: {channel_name}")
+        elif state == vlc.State.Playing and not is_playing:
+            self.info_label.setText("Буферизация...")
+            self.statusbar_label.setText("Буферизация...")
+            self.progress_bar.setVisible(True)
+        elif state == vlc.State.Paused:
+            self.progress_bar.setVisible(False)
+            if self.current_channel_index >= 0:
+                channel_name = self.channels[self.current_channel_index]['name']
+                self.info_label.setText(f"Пауза: {channel_name}")
+                self.statusbar_label.setText(f"Пауза: {channel_name}")
+        elif state == vlc.State.Stopped:
+            self.progress_bar.setVisible(False)
+            self.info_label.setText("Остановлено")
+            self.statusbar_label.setText("Остановлено")
+        elif state == vlc.State.Ended:
+            self.progress_bar.setVisible(False)
+            self.info_label.setText("Воспроизведение завершено")
+            self.statusbar_label.setText("Воспроизведение завершено")
+            self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        elif state == vlc.State.Error:
+            self.progress_bar.setVisible(False)
+            self.info_label.setText("Ошибка воспроизведения")
+            self.statusbar_label.setText("Ошибка воспроизведения")
         
         # Если воспроизведение идет, но нет видео трека - пробуем перезапустить
-        if self.media_player.is_playing() and not self.media_player.has_vout():
-            # Показываем информацию о проблеме с видео
+        if is_playing and not self.media_player.has_vout():
             if hasattr(self, 'video_retry_count'):
                 self.video_retry_count += 1
-                #if self.video_retry_count > 10:  # Если более 10 попыток, останавливаем
-                #    self.info_label.setText("Нет видеопотока. Возможно аудио-канал.")
-                #    self.statusbar_label.setText("Нет видеопотока")
-                #    delattr(self, 'video_retry_count')
+                if self.video_retry_count > 10:  # После 10 попыток сообщаем, что это может быть аудио-канал
+                    self.info_label.setText("Нет видеопотока. Возможно аудио-канал.")
+                    self.statusbar_label.setText("Нет видеопотока")
+                    # Не сбрасываем счетчик, чтобы не спамить сообщениями
             else:
                 self.video_retry_count = 1
-        elif self.media_player.is_playing() and self.media_player.has_vout():
-            if hasattr(self, 'video_retry_count'):
-                delattr(self, 'video_retry_count')
 
     def handle_error(self, event):
         """Обработчик ошибок воспроизведения"""
         self.progress_bar.setVisible(False)
         
+        # Увеличиваем счетчик попыток переподключения
+        self.retry_count += 1
+        
         try:
-            if 0 <= self.current_channel_index < len(self.channels):
-                name = self.channels[self.current_channel_index].get('name', 'Неизвестный канал')
-                error_message = f"Ошибка воспроизведения: {name}"
+            # Получаем текущее медиа
+            media = self.media_player.get_media()
+            if media:
+                media_url = media.get_mrl()
+                error_msg = f"Ошибка воспроизведения потока: {media_url}"
             else:
-                name = "Неизвестный канал"
-                error_message = "Ошибка воспроизведения потока"
+                error_msg = "Ошибка воспроизведения потока"
                 
-            self.info_label.setText(error_message)
-            self.statusbar_label.setText(error_message)
+            # Получаем информацию о канале
+            channel_name = None
+            if 0 <= self.current_channel_index < len(self.channels):
+                channel = self.channels[self.current_channel_index]
+                channel_name = channel.get('name', 'Неизвестный канал')
+                error_msg = f"Ошибка воспроизведения канала: {channel_name}"
             
-            # Показываем уведомление об ошибке через QTimer для избежания блокировки UI
-            QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Ошибка воспроизведения", 
-                f"Не удалось воспроизвести канал '{name}'.\nПроверьте соединение с интернетом или попробуйте другой канал."))
+            self.info_label.setText(error_msg)
+            
+            # Показываем информацию о попытке переподключения
+            self.statusBar().showMessage(f"⚠️ Ошибка воспроизведения! Переподключение... Попытка №{self.retry_count}", 5000)
+            logging.error(f"Ошибка воспроизведения VLC. Попытка переподключения #{self.retry_count}")
+            
+            # Запускаем переподключение через 3 секунды
+            QTimer.singleShot(3000, self.retry_current_channel)
+            
         except Exception as e:
-            print(f"Ошибка при обработке события MediaPlayerEncounteredError: {e}")
+            logging.error(f"Ошибка при обработке события MediaPlayerEncounteredError: {e}")
+            self.info_label.setText(f"Ошибка воспроизведения: {str(e)}")
+            self.statusBar().showMessage("Ошибка воспроизведения", 5000)
 
     def media_playing(self, event):
         """Событие начала воспроизведения"""
@@ -2009,8 +2222,12 @@ class IPTVPlayer(QMainWindow):
                     return
             
             try:
-                # Создаем временный файл для загрузки
-                temp_file = "temp_playlist.m3u"
+                # Создаем уникальное имя для временного файла
+                import uuid
+                temp_file = f"temp_playlist_{str(uuid.uuid4())[:8]}.m3u"
+                
+                # Удаляем старые временные файлы перед загрузкой
+                self._cleanup_temp_files()
                 
                 # Показываем прогресс
                 self.info_label.setText(f"Скачивание плейлиста из {url}...")
@@ -2050,52 +2267,153 @@ class IPTVPlayer(QMainWindow):
                             # Автоматически выбираем первый канал 
                             self.select_first_channel()
                         except Exception as e:
+                            logging.error(f"Ошибка при загрузке плейлиста: {e}")
                             QMessageBox.critical(
                                 self, "Ошибка", f"Не удалось загрузить плейлист: {str(e)}"
                             )
+                            try:
+                                if os.path.exists(temp_file):
+                                    os.remove(temp_file)
+                            except:
+                                pass
                     else:
+                        self.info_label.setText(f"Ошибка загрузки плейлиста: {error_message}")
+                        self.statusbar_label.setText("Ошибка загрузки плейлиста")
                         QMessageBox.critical(
                             self, "Ошибка", f"Не удалось загрузить плейлист: {error_message}"
                         )
+                        try:
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
+                        except:
+                            pass
                 
-                # Создаем поток и запускаем его
+                # Создаем и запускаем поток
                 self.download_thread = PlaylistDownloadThread(url, temp_file)
                 self.download_thread.finished.connect(download_finished)
                 self.download_thread.start()
                 
             except Exception as e:
                 self.progress_bar.setVisible(False)
+                logging.error(f"Ошибка при загрузке плейлиста: {e}")
                 QMessageBox.critical(
                     self, "Ошибка", f"Не удалось загрузить плейлист: {str(e)}"
                 )
+                
+    def _cleanup_temp_files(self):
+        """Удаляет старые временные файлы плейлистов"""
+        try:
+            # Перечисляем все файлы в текущей директории
+            for filename in os.listdir("."):
+                # Ищем временные файлы плейлистов
+                if filename.startswith("temp_playlist_") and filename.endswith(".m3u"):
+                    # Пропускаем текущий использующийся файл
+                    if hasattr(self, 'temp_playlist_path') and filename == self.temp_playlist_path:
+                        continue
+                    
+                    # Проверяем время создания файла
+                    file_path = os.path.join(".", filename)
+                    creation_time = os.path.getctime(file_path)
+                    
+                    # Если файл старше 1 часа, удаляем его
+                    if (time.time() - creation_time) > 3600:  # 3600 секунд = 1 час
+                        try:
+                            os.remove(file_path)
+                            logging.debug(f"Удален устаревший временный файл: {filename}")
+                        except Exception as e:
+                            logging.error(f"Ошибка при удалении временного файла {filename}: {e}")
+        except Exception as e:
+            logging.error(f"Ошибка при очистке временных файлов: {e}")
 
     def reload_playlist(self):
-        """Перезагружает плейлист"""
+        """Перезагружает текущий плейлист из его источника (URL или файл)"""
         self.stop()
         self.channels = []
         self.categories = {"Все каналы": []}
-        
-        if hasattr(self, 'temp_playlist_path') and self.temp_playlist_path:
-            self.load_external_playlist(self.temp_playlist_path)
-        else:
-            self.load_playlist()
-            
-        self.fill_channel_list()
-        self.info_label.setText("Плейлист перезагружен")
-        
-        # Обновляем отображение количества каналов в статус-баре
-        total_channels = len(self.channels)
-        visible_channels = total_channels - len(self.hidden_channels)
-        self.statusbar_label.setText(f"Всего каналов: {total_channels} (видимых: {visible_channels})")
-        
-        # Автоматически выбираем первый канал
-        self.select_first_channel()
 
+        if not self.current_playlist:
+            QMessageBox.warning(self, "Ошибка", "Не выбран текущий плейлист для обновления.")
+            self.statusbar_label.setText("Ошибка: Нет плейлиста для обновления")
+            return
+
+        playlist_source = self.current_playlist
+        is_url = playlist_source.startswith(('http://', 'https://'))
+
+        if is_url:
+            # --- Обновление из URL ---
+            temp_file = "temp_playlist_for_reload.m3u" # Используем отдельное имя файла для перезагрузки
+            self.info_label.setText(f"Обновление плейлиста из {playlist_source}...")
+            self.statusbar_label.setText("Обновление плейлиста из URL...")
+            self.progress_bar.setVisible(True)
+
+            def download_finished(success, error_message, source_url=""): # Добавлен source_url для совместимости
+                self.progress_bar.setVisible(False)
+                if success:
+                    try:
+                        # Загружаем обновленный плейлист
+                        self.temp_playlist_path = temp_file # Обновляем путь к временному файлу
+                        self.load_external_playlist(temp_file)
+                        self.fill_channel_list()
+                        self.info_label.setText("Плейлист успешно обновлен из URL")
+                        self.statusbar_label.setText("Плейлист обновлен из URL")
+                        # Обновляем отображение количества каналов
+                        total_channels = len(self.channels)
+                        visible_channels = total_channels - len(self.hidden_channels)
+                        self.playlist_info_label.setText(f"Всего каналов: {total_channels} (видимых: {visible_channels})")
+                        self.select_first_channel()
+                    except Exception as e:
+                        QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить каналы из обновленного плейлиста: {str(e)}")
+                        self.info_label.setText("Ошибка загрузки каналов")
+                        self.statusbar_label.setText("Ошибка загрузки каналов")
+                else:
+                    QMessageBox.critical(self, "Ошибка обновления", f"Не удалось скачать плейлист: {error_message}")
+                    self.info_label.setText(f"Ошибка обновления: {error_message}")
+                    self.statusbar_label.setText("Ошибка обновления плейлиста")
+                     # Попытаться загрузить старую временную версию, если она есть
+                    if hasattr(self, 'temp_playlist_path') and os.path.exists(self.temp_playlist_path):
+                         try:
+                             self.load_external_playlist(self.temp_playlist_path)
+                             self.fill_channel_list()
+                             self.info_label.setText("Загружена предыдущая версия плейлиста")
+                             self.statusbar_label.setText("Загружена предыдущая версия")
+                             QMessageBox.information(self, "Информация", "Не удалось обновить плейлист. Загружена предыдущая версия.")
+                             self.select_first_channel()
+                         except Exception as load_err:
+                             QMessageBox.critical(self, "Критическая ошибка", f"Не удалось загрузить даже предыдущую версию: {load_err}")
+
+
+            # Используем PlaylistDownloadThread для скачивания
+            self.download_thread = PlaylistDownloadThread(playlist_source, temp_file)
+            self.download_thread.finished.connect(download_finished)
+            self.download_thread.start()
+
+        else:
+            # --- Обновление из файла ---
+            if os.path.exists(playlist_source):
+                try:
+                    self.load_external_playlist(playlist_source)
+                    self.fill_channel_list()
+                    self.info_label.setText(f"Плейлист '{os.path.basename(playlist_source)}' перезагружен")
+                    self.statusbar_label.setText("Плейлист перезагружен из файла")
+                     # Обновляем отображение количества каналов
+                    total_channels = len(self.channels)
+                    visible_channels = total_channels - len(self.hidden_channels)
+                    self.playlist_info_label.setText(f"Всего каналов: {total_channels} (видимых: {visible_channels})")
+                    self.select_first_channel()
+                except Exception as e:
+                    QMessageBox.critical(self, "Ошибка", f"Не удалось перезагрузить плейлист из файла: {str(e)}")
+                    self.info_label.setText("Ошибка перезагрузки файла")
+                    self.statusbar_label.setText("Ошибка перезагрузки файла")
+            else:
+                QMessageBox.warning(self, "Ошибка", f"Файл плейлиста не найден: {playlist_source}")
+                self.info_label.setText("Файл плейлиста не найден")
+                self.statusbar_label.setText("Файл плейлиста не найден")
+    
     def toggle_favorites(self):
         """Переключение отображения избранных каналов"""
         if self.show_favorites:
             self.show_favorites = False
-            self.favorites_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+            self.favorites_button.setIcon(self.style().standardIcon(QStyle.SP_DialogYesButton))
             self.fill_channel_list()
             
             # Обновляем отображение количества каналов
@@ -2134,7 +2452,7 @@ class IPTVPlayer(QMainWindow):
         else:
             self.show_hidden = True
             self.show_favorites = False
-            self.favorites_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+            self.favorites_button.setIcon(self.style().standardIcon(QStyle.SP_DialogYesButton))
             self.hidden_button.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
             self.fill_hidden_list()
             self.statusbar_label.setText(f"Скрытых каналов: {len(self.hidden_channels)}")
@@ -2536,40 +2854,53 @@ class IPTVPlayer(QMainWindow):
                 # Воспроизвести канал
                 self.play_channel(i)
                 return
+    def retry_current_channel(self):
+        """Повторное воспроизведение текущего канала после ошибки"""
+        if hasattr(self, "current_channel_index") and self.current_channel_index >= 0:
+            self.play_channel(self.current_channel_index)
+            logging.info(f"Попытка №{self.retry_count} воспроизвести канал: {self.current_channel_index}")
 
 def main():
-    app = QApplication(sys.argv)
-    
-    # Устанавливаем иконку приложения
-    app.setWindowIcon(QIcon(app.style().standardIcon(QStyle.SP_MediaPlay).pixmap(QSize(128, 128))))
-    
-    # Темная тема для всего приложения
-    app.setStyle("Fusion")
-    
-    dark_palette = QPalette()
-    dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
-    dark_palette.setColor(QPalette.WindowText, Qt.white)
-    dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
-    dark_palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-    dark_palette.setColor(QPalette.ToolTipBase, QColor(25, 25, 25))
-    dark_palette.setColor(QPalette.ToolTipText, Qt.white)
-    dark_palette.setColor(QPalette.Text, Qt.white)
-    dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
-    dark_palette.setColor(QPalette.ButtonText, Qt.white)
-    dark_palette.setColor(QPalette.BrightText, Qt.red)
-    dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
-    dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-    dark_palette.setColor(QPalette.HighlightedText, QColor(35, 35, 35))
-    dark_palette.setColor(QPalette.Active, QPalette.Button, QColor(53, 53, 53))
-    dark_palette.setColor(QPalette.Disabled, QPalette.ButtonText, Qt.darkGray)
-    dark_palette.setColor(QPalette.Disabled, QPalette.WindowText, Qt.darkGray)
-    dark_palette.setColor(QPalette.Disabled, QPalette.Text, Qt.darkGray)
-    dark_palette.setColor(QPalette.Disabled, QPalette.Light, QColor(53, 53, 53))
-    
-    app.setPalette(dark_palette)
-    
-    player = IPTVPlayer()
-    sys.exit(app.exec_())
+    """Основная функция программы"""
+    try:
+        # Настройка системы логирования
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+            
+        log_file = os.path.join(log_dir, f"iptv_player_{datetime.now().strftime('%Y%m%d')}.log")
+        
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s [%(levelname)s] %(message)s',
+            handlers=[
+                logging.FileHandler(log_file, encoding='utf-8'),
+                logging.StreamHandler()
+            ]
+        )
+        
+        logging.info("Запуск приложения MaksIPTV Плеер")
+        
+        # Создаем экземпляр приложения
+        app = QApplication(sys.argv)
+        app.setStyle('Fusion')  # Устанавливаем стиль
+        
+        # Создаем главное окно
+        window = IPTVPlayer()
+        
+        # Обработка завершения приложения
+        app.aboutToQuit.connect(window.cleanup)
+        
+        # Запускаем цикл обработки событий
+        sys.exit(app.exec_())
+    except Exception as e:
+        logging.critical(f"Критическая ошибка при запуске приложения: {e}", exc_info=True)
+        if 'app' in locals():
+            QMessageBox.critical(None, "Критическая ошибка", 
+                               f"Произошла критическая ошибка при запуске приложения:\n{str(e)}")
+        else:
+            print(f"Критическая ошибка при запуске: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 
