@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MaksIPTV Плеер - Современный IPTV плеер</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        :root {
+            --primary-color: #4a9dd8;
+            --dark-bg: #121212;
+            --dark-content: #1d1d1d;
+            --text-color: #e0e0e0;
+            --accent-color: #4a9dd8;
+            --border-color: #333333;
+            --card-bg: #1d1d1d;
+            --hover-color: #2d2d2d;
+        }
+        
+        body {
+            background-color: var(--dark-bg);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+        }
+        
+        .navbar {
+            background-color: var(--dark-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 0;
+        }
+        
+        .navbar-brand {
+            font-weight: bold;
+            color: var(--primary-color) !important;
+            font-size: 1.6rem;
+        }
+        
+        .hero {
+            padding: 5rem 0;
+            background: linear-gradient(145deg, #151515, #080808);
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .app-screenshot {
+            border-radius: 12px;
+            box-shadow: 0 15px 30px rgba(0,0,0,0.4);
+            border: 1px solid var(--border-color);
+            max-width: 100%;
+            height: auto;
+            transition: transform 0.3s;
+        }
+        
+        .app-screenshot:hover {
+            transform: scale(1.02);
+        }
+        
+        .section {
+            padding: 5rem 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .feature-card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            height: 100%;
+            border: 1px solid var(--border-color);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            border-color: var(--primary-color);
+            background-color: var(--hover-color);
+        }
+        
+        .feature-icon {
+            font-size: 2.5rem;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+        }
+        
+        h1, h2, h3, h4, h5 {
+            font-weight: bold;
+        }
+        
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+            padding: 0.5rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            filter: brightness(1.1);
+        }
+        
+        .btn-outline-primary {
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+            padding: 0.5rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        
+        .btn-outline-primary:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
+        pre {
+            background-color: #0a0a0a;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+        
+        code {
+            color: var(--accent-color);
+        }
+        
+        .tab-pane {
+            background-color: var(--dark-content);
+            padding: 1.5rem;
+            border-radius: 0 0 8px 8px;
+            border: 1px solid var(--border-color);
+            border-top: none;
+        }
+        
+        .nav-tabs {
+            border-bottom-color: var(--border-color);
+        }
+        
+        .nav-tabs .nav-link {
+            color: var(--text-color);
+            background-color: transparent;
+            border: 1px solid transparent;
+        }
+        
+        .nav-tabs .nav-link.active {
+            color: var(--primary-color);
+            background-color: var(--dark-content);
+            border-color: var(--border-color);
+            border-bottom-color: var(--dark-content);
+        }
+        
+        .version-badge {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            display: inline-block;
+            margin-left: 1rem;
+        }
+        
+        .footer {
+            padding: 2rem 0;
+            background-color: #0a0a0a;
+        }
+        
+        .footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        
+        .footer a:hover {
+            text-decoration: underline;
+        }
+        
+        .github-corner {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 80px;
+            height: 80px;
+            fill: var(--primary-color);
+            color: var(--dark-bg);
+        }
+
+        /* Custom Styles */
+        .hero {
+            background: linear-gradient(135deg, #0f1620 0%, #1e2c3d 100%);
+            color: white;
+            padding: 80px 0;
+        }
+
+        a {
+            color: var(--primary-color);
+        }
+        
+        a:hover {
+            color: var(--accent-color);
+            filter: brightness(1.2);
+        }
+        
+        .nav-link {
+            color: #e0e0e0;
+            transition: color 0.2s;
+        }
+        
+        .nav-link:hover {
+            color: var(--primary-color);
+        }
+        
+        .list-unstyled li {
+            margin-bottom: 0.5rem;
+        }
+        
+        hr {
+            background-color: var(--border-color);
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <!-- GitHub Corner -->
+    <a href="https://github.com/maks-mk/maksiptv" class="github-corner" aria-label="View on GitHub">
+        <svg width="80" height="80" viewBox="0 0 250 250" style="position: absolute; top: 0; right: 0; border: 0;" aria-hidden="true">
+            <path d="M0,0 L115,115 L130,115 L142,142 L250,250 L250,0 Z"></path>
+            <path d="M128.3,109.0 C113.8,99.7 119.0,89.6 119.0,89.6 C122.0,82.7 120.5,78.6 120.5,78.6 C119.2,72.0 123.4,76.3 123.4,76.3 C127.3,80.9 125.5,87.3 125.5,87.3 C122.9,97.6 130.6,101.9 134.4,103.2" fill="currentColor" style="transform-origin: 130px 106px;" class="octo-arm"></path>
+            <path d="M115.0,115.0 C114.9,115.1 118.7,116.5 119.8,115.4 L133.7,101.6 C136.9,99.2 139.9,98.4 142.2,98.6 C133.8,88.0 127.5,74.4 143.8,58.0 C148.5,53.4 154.0,51.2 159.7,51.0 C160.3,49.4 163.2,43.6 171.4,40.1 C171.4,40.1 176.1,42.5 178.8,56.2 C183.1,58.6 187.2,61.8 190.9,65.4 C194.5,69.0 197.7,73.2 200.1,77.6 C213.8,80.2 216.3,84.9 216.3,84.9 C212.7,93.1 206.9,96.0 205.4,96.6 C205.1,102.4 203.0,107.8 198.3,112.5 C181.9,128.9 168.3,122.5 157.7,114.1 C157.9,116.9 156.7,120.9 152.7,124.9 L141.0,136.5 C139.8,137.7 141.6,141.9 141.8,141.8 Z" fill="currentColor" class="octo-body"></path>
+        </svg>
+    </a>
+
+    <!-- Navbar -->
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container">
+            <a class="navbar-brand" href="#">MaksIPTV <span class="version-badge">v0.11.44</span></a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="#features">Возможности</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#installation">Установка</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#usage">Использование</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#download">Скачать</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <div class="row align-items-center">
+                <div class="col-md-6">
+                    <h1 class="mb-4">Современный IPTV плеер для любого устройства</h1>
+                    <p class="lead mb-4">MaksIPTV — это мощный плеер для просмотра IPTV каналов с поддержкой плейлистов M3U/M3U8, умной буферизацией и автоматическим переподключением.</p>
+                    <div class="d-flex gap-3">
+                        <a href="https://github.com/maks-mk/maksiptv/releases" class="btn btn-primary">
+                            <i class="bi bi-download me-2"></i>Скачать
+                        </a>
+                        <a href="https://github.com/maks-mk/maksiptv" class="btn btn-outline-primary">
+                            <i class="bi bi-github me-2"></i>GitHub
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 text-center mt-4 mt-md-0">
+                    <img src="maksiptv.png" alt="MaksIPTV Screenshot" class="app-screenshot">
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="section">
+        <div class="container">
+            <h2 class="text-center mb-5">Основные возможности</h2>
+            <div class="row">
+                <div class="col-md-4 mb-4">
+                    <div class="feature-card">
+                        <i class="bi bi-tv feature-icon"></i>
+                        <h3>Умное воспроизведение</h3>
+                        <p>Автоматическое переподключение при ошибках и интеллектуальная буферизация для стабильного просмотра каналов.</p>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-4">
+                    <div class="feature-card">
+                        <i class="bi bi-list-stars feature-icon"></i>
+                        <h3>Работа с плейлистами</h3>
+                        <p>Поддержка плейлистов M3U/M3U8 с локального диска и из интернета с автоматическим обновлением.</p>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-4">
+                    <div class="feature-card">
+                        <i class="bi bi-collection feature-icon"></i>
+                        <h3>Организация каналов</h3>
+                        <p>Удобная навигация по категориям, список избранного, скрытие нежелательных каналов и быстрый поиск.</p>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-4">
+                    <div class="feature-card">
+                        <i class="bi bi-fullscreen feature-icon"></i>
+                        <h3>Комфортный просмотр</h3>
+                        <p>Полноэкранный режим, создание скриншотов, настройка громкости и переключение аудиодорожек.</p>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-4">
+                    <div class="feature-card">
+                        <i class="bi bi-palette feature-icon"></i>
+                        <h3>Современный интерфейс</h3>
+                        <p>Стильный темный дизайн с минимальной нагрузкой на глаза, адаптивной компоновкой и удобной навигацией.</p>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-4">
+                    <div class="feature-card">
+                        <i class="bi bi-laptop feature-icon"></i>
+                        <h3>Кроссплатформенность</h3>
+                        <p>Работает на Windows, Linux и MacOS с одинаковым набором функций и без дополнительных настроек.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Installation Section -->
+    <section id="installation" class="section">
+        <div class="container">
+            <h2 class="text-center mb-5">Установка</h2>
+            <div class="row justify-content-center">
+                <div class="col-lg-8">
+                    <ul class="nav nav-tabs mb-3" id="installTabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="windows-tab" data-bs-toggle="tab" data-bs-target="#windows" type="button" role="tab" aria-controls="windows" aria-selected="true">Windows</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="linux-tab" data-bs-toggle="tab" data-bs-target="#linux" type="button" role="tab" aria-controls="linux" aria-selected="false">Linux</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="macos-tab" data-bs-toggle="tab" data-bs-target="#macos" type="button" role="tab" aria-controls="macos" aria-selected="false">MacOS</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="pip-tab" data-bs-toggle="tab" data-bs-target="#pip" type="button" role="tab" aria-controls="pip" aria-selected="false">Установка из исходников</button>
+                        </li>
+                    </ul>
+                    <div class="tab-content" id="installTabsContent">
+                        <div class="tab-pane fade show active" id="windows" role="tabpanel" aria-labelledby="windows-tab">
+                            <ol>
+                                <li>Убедитесь, что у вас установлен <a href="https://www.videolan.org/vlc/" target="_blank">VLC Media Player</a></li>
+                                <li>Скачайте последний релиз с <a href="https://github.com/maks-mk/maksiptv/releases" target="_blank">GitHub Releases</a></li>
+                                <li>Распакуйте архив в удобное место</li>
+                                <li>Запустите <code>MaksIPTV.exe</code></li>
+                            </ol>
+                        </div>
+                        <div class="tab-pane fade" id="linux" role="tabpanel" aria-labelledby="linux-tab">
+                            <p>1. Установите необходимые зависимости:</p>
+                            <pre><code>sudo apt install python3 python3-pip vlc python3-pyqt5</code></pre>
+                            <p>2. Клонируйте репозиторий:</p>
+                            <pre><code>git clone https://github.com/maks-mk/maksiptv.git
+cd maksiptv</code></pre>
+                            <p>3. Установите Python-зависимости:</p>
+                            <pre><code>pip3 install -r requirements.txt</code></pre>
+                            <p>4. Запустите приложение:</p>
+                            <pre><code>python3 main.py</code></pre>
+                        </div>
+                        <div class="tab-pane fade" id="macos" role="tabpanel" aria-labelledby="macos-tab">
+                            <p>1. Убедитесь, что у вас установлен <a href="https://brew.sh/" target="_blank">Homebrew</a></p>
+                            <p>2. Установите необходимые зависимости:</p>
+                            <pre><code>brew install python3 vlc
+pip3 install PyQt5 python-vlc</code></pre>
+                            <p>3. Клонируйте репозиторий:</p>
+                            <pre><code>git clone https://github.com/maks-mk/maksiptv.git
+cd maksiptv</code></pre>
+                            <p>4. Запустите приложение:</p>
+                            <pre><code>python3 main.py</code></pre>
+                        </div>
+                        <div class="tab-pane fade" id="pip" role="tabpanel" aria-labelledby="pip-tab">
+                            <p>1. Убедитесь, что у вас установлен Python 3.6+ и VLC Media Player</p>
+                            <p>2. Клонируйте репозиторий:</p>
+                            <pre><code>git clone https://github.com/maks-mk/maksiptv.git
+cd maksiptv</code></pre>
+                            <p>3. Установите зависимости:</p>
+                            <pre><code>pip install -r requirements.txt</code></pre>
+                            <p>4. Запустите приложение:</p>
+                            <pre><code>python main.py</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Usage Section -->
+    <section id="usage" class="section">
+        <div class="container">
+            <h2 class="text-center mb-5">Использование</h2>
+            <div class="row justify-content-center mb-5">
+                <div class="col-lg-8">
+                    <div class="feature-card">
+                        <h3>Подготовка плейлиста</h3>
+                        <ol>
+                            <li>Поместите ваш M3U плейлист в директорию с программой с именем <code>IPTV_SHARED.m3u</code></li>
+                            <li>Или используйте меню "Файл" → "Открыть плейлист" для выбора любого плейлиста с компьютера</li>
+                            <li>Или используйте меню "Файл" → "Добавить плейлист из URL" для загрузки плейлиста из интернета</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-4">
+                    <div class="feature-card">
+                        <h3><i class="bi bi-collection me-2 text-primary"></i>Работа с каналами</h3>
+                        <ul>
+                            <li>Выбор категории из выпадающего списка</li>
+                            <li>Поиск каналов по названию</li>
+                            <li>Добавление в избранное через контекстное меню</li>
+                            <li>Скрытие нежелательных каналов</li>
+                            <li>Сортировка каналов по алфавиту</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-md-6 mb-4">
+                    <div class="feature-card">
+                        <h3><i class="bi bi-play-circle me-2 text-primary"></i>Управление воспроизведением</h3>
+                        <ul>
+                            <li>Воспроизведение/пауза (Пробел)</li>
+                            <li>Полноэкранный режим (F)</li>
+                            <li>Выход из полноэкрана (ESC)</li>
+                            <li>Регулировка громкости</li>
+                            <li>Создание скриншотов</li>
+                            <li>Автоматическое переподключение при ошибках</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-md-6 mb-4">
+                    <div class="feature-card">
+                        <h3><i class="bi bi-card-list me-2 text-primary"></i>Управление плейлистами</h3>
+                        <ul>
+                            <li>Обновление плейлиста из интернета</li>
+                            <li>История недавних плейлистов</li>
+                            <li>Проверка доступности каналов</li>
+                            <li>Удаление плейлистов из истории</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-md-6 mb-4">
+                    <div class="feature-card">
+                        <h3><i class="bi bi-tools me-2 text-primary"></i>Дополнительные функции</h3>
+                        <ul>
+                            <li>Минимизация в системный трей</li>
+                            <li>Автоматическое сохранение настроек</li>
+                            <li>Логирование работы для диагностики</li>
+                            <li>Поддержка горячих клавиш</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Download Section -->
+    <section id="download" class="section">
+        <div class="container text-center">
+            <h2 class="mb-4">Готовы начать?</h2>
+            <p class="lead mb-5">Скачайте MaksIPTV прямо сейчас и начните смотреть ваши любимые каналы</p>
+            <div class="d-flex justify-content-center gap-3">
+                <a href="https://github.com/maks-mk/maksiptv/releases" class="btn btn-primary btn-lg">
+                    <i class="bi bi-download me-2"></i>Скачать последнюю версию
+                </a>
+                <a href="https://github.com/maks-mk/maksiptv" class="btn btn-outline-primary btn-lg">
+                    <i class="bi bi-github me-2"></i>Исходный код на GitHub
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6 mb-4 mb-md-0">
+                    <h4>MaksIPTV</h4>
+                    <p>Современный плеер для просмотра IPTV каналов из M3U плейлиста</p>
+                    <p>Версия: 0.11.44</p>
+                </div>
+                <div class="col-md-3 mb-4 mb-md-0">
+                    <h5>Ссылки</h5>
+                    <ul class="list-unstyled">
+                        <li><a href="https://github.com/maks-mk/maksiptv">GitHub</a></li>
+                        <li><a href="https://github.com/maks-mk/maksiptv/releases">Релизы</a></li>
+                        <li><a href="https://github.com/maks-mk/maksiptv/issues">Сообщить о проблеме</a></li>
+                    </ul>
+                </div>
+                <div class="col-md-3">
+                    <h5>Технологии</h5>
+                    <ul class="list-unstyled">
+                        <li>Python 3</li>
+                        <li>PyQt5</li>
+                        <li>VLC Media Player</li>
+                    </ul>
+                </div>
+            </div>
+            <hr class="mt-4 mb-4" style="border-color: var(--border-color);">
+            <div class="row">
+                <div class="col-md-12 text-center">
+                    <p class="mb-0">© 2025 MaksIPTV. Все права защищены.</p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html> 
