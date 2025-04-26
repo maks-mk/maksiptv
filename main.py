@@ -730,7 +730,7 @@ class IPTVPlayer(QMainWindow):
         self.fullscreen_button.setIcon(self.style().standardIcon(QStyle.SP_TitleBarMaxButton))
         self.fullscreen_button.setIconSize(icon_size)
         self.fullscreen_button.setFixedSize(button_size)
-        self.fullscreen_button.setToolTip("Полный экран (F)")
+        self.fullscreen_button.setToolTip("Полный экран (CTRL+F)")
         self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
         
         # Слайдер громкости
@@ -1292,7 +1292,7 @@ class IPTVPlayer(QMainWindow):
                          "<h3>MaksIPTV Плеер</h3>"
                          "<p>Версия 0.11.44</p>"
                          "<p>Современный плеер для просмотра IPTV каналов из M3U плейлиста</p>"
-                         "<p>© 2025</p>")
+                         "<p>MaksK © 2025</p>")
 
     def load_playlist(self):
         playlist_file = "IPTV_SHARED.m3u"
