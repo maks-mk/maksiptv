@@ -1,14 +1,11 @@
 {
-    "volume": 69,
-    "last_channel": "1FILMAX Фантастика (FWVGA)",
-    "favorites": [
-        "EnerGeek (720p) [Not 24/7]"
-    ],
+    "volume": 100,
+    "last_channel": "Россия 1 HD",
+    "favorites": [],
     "hidden_channels": [],
     "recent_playlists": [
-        "https://smolnp.github.io/IPTVru//IPTVru.m3u",
-        "https://iptv-org.github.io/iptv/index.m3u",
-        "IPTV_SHARED.m3u"
+        "http://493f65d59319.yourlistbest.net/playlists/uplist/a16354737129a4d2aca8e205ccbb3b4a/playlist.m3u8",
+        "local.m3u"
     ],
-    "current_playlist": "IPTV_SHARED.m3u"
+    "current_playlist": "http://493f65d59319.yourlistbest.net/playlists/uplist/a16354737129a4d2aca8e205ccbb3b4a/playlist.m3u8"
 }
