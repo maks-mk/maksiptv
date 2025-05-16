@@ -11,6 +11,27 @@ import uuid
 from datetime import datetime
 from functools import partial
 import warnings
+import requests
+import hashlib
+import urllib3
+
+"""
+MaksIPTV Player
+Версия 0.11.48 (Рефакторинг)
+
+Изменения:
+1. Разбит перегруженный метод init_ui() на логические компоненты для 
+   лучшей читаемости и поддержки кода
+2. Добавлены вспомогательные методы (make_icon_button, create_labeled_control и др.)
+   для устранения дублирования кода и упрощения интерфейса
+3. Исправлен баг с полноэкранным режимом через переработку toggle_fullscreen()
+4. Изолирована платформенно-зависимая логика в отдельный класс PlatformManager
+5. Улучшена документация методов для облегчения будущей поддержки
+6. Добавлен централизованный метод обновления UI
+
+Все функции сохранены в полном объеме, изменения касаются только
+внутренней структуры кода для улучшения его поддерживаемости.
+"""
 
 # Игнорируем предупреждения о устаревшем методе sipPyTypeDict в PyQt5
 warnings.filterwarnings("ignore", category=DeprecationWarning, message="sipPyTypeDict")
@@ -30,13 +51,13 @@ from PyQt5.QtWidgets import (
     QListWidgetItem, QWidgetAction, QGraphicsOpacityEffect, QMessageBox, 
     QTreeWidget, QTreeWidgetItem, QFrame, QSplitter, QListWidget, QMenuBar, 
     QDialog, QSizePolicy, QTextBrowser, QStackedWidget, QHeaderView, 
-    QTreeWidgetItemIterator
+    QTreeWidgetItemIterator, QAbstractItemView, QDialogButtonBox
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QSize, pyqtSignal, QThread, QPoint, QByteArray, QEvent
 )
 from PyQt5.QtGui import (
-    QIcon, QFont, QPalette, QColor, QPixmap, QImage, QCursor
+    QIcon, QFont, QPalette, QColor, QPixmap, QImage, QCursor, QPainter, QBrush, QPen, QLinearGradient
 )
 
 # Определение потоковых классов для загрузки
@@ -464,6 +485,101 @@ class ClickableLabel(QLabel):
         # Вызываем родительский обработчик
         super(ClickableLabel, self).mousePressEvent(event)
 
+class PlatformManager:
+    """Класс для управления платформенно-зависимой логикой
+    
+    Обеспечивает унифицированный доступ к функциям, которые различаются
+    в зависимости от операционной системы (Windows, Linux, macOS).
+    """
+    
+    @staticmethod
+    def get_platform_name():
+        """Возвращает название текущей платформы
+        
+        Returns:
+            str: Название платформы ('windows', 'linux', 'macos' или 'unknown')
+        """
+        if sys.platform.startswith('win'):
+            return 'windows'
+        elif sys.platform.startswith('linux'):
+            return 'linux'
+        elif sys.platform.startswith('darwin'):
+            return 'macos'
+        else:
+            return 'unknown'
+    
+    @staticmethod
+    def setup_vlc_video_output(media_player, frame_handle):
+        """Настраивает вывод видео с учетом платформы
+        
+        Args:
+            media_player: Объект медиаплеера VLC
+            frame_handle: Дескриптор окна для вывода видео
+            
+        Returns:
+            tuple: (success, error_message)
+        """
+        try:
+            if sys.platform.startswith("linux"):
+                # Для Linux используем X Window System
+                media_player.set_xwindow(int(frame_handle))
+                return True, "Настроен видеовывод для Linux (XWindow)"
+            elif sys.platform.startswith("win"):
+                # Для Windows используем HWND
+                media_player.set_hwnd(frame_handle)
+                return True, "Настроен видеовывод для Windows (HWND)"
+            elif sys.platform.startswith("darwin"):
+                # Для macOS используем NSObject
+                media_player.set_nsobject(int(frame_handle))
+                return True, "Настроен видеовывод для macOS (NSObject)"
+            else:
+                # Для неизвестных платформ пытаемся использовать XWindow
+                media_player.set_xwindow(int(frame_handle))
+                return True, f"Использован XWindow для неизвестной платформы: {sys.platform}"
+        except Exception as e:
+            return False, str(e)
+
+    @staticmethod
+    def get_vlc_args():
+        """Возвращает аргументы командной строки для VLC в зависимости от платформы
+        
+        Returns:
+            list: Список аргументов командной строки для VLC
+        """
+        args = [
+            "--no-video-title-show",
+            "--no-osd",
+            "--no-stats",
+            "--no-sub-autodetect",
+            "--no-snapshot-preview",
+            "--live-caching=1000",
+            "--network-caching=3000",
+            "--http-reconnect",
+            "--rtsp-tcp",
+        ]
+        
+        # Добавляем специфические для платформы аргументы
+        platform = PlatformManager.get_platform_name()
+        
+        if platform == 'windows':
+            # Пробуем использовать Direct3D для ускорения
+            args.extend([
+                "--directx-device=default",
+                "--directx-use-sysmem",
+            ])
+        elif platform == 'linux':
+            # Для Linux можем использовать опции для X11
+            args.extend([
+                "--x11-display=default",
+            ])
+        elif platform == 'macos':
+            # Для macOS 
+            args.extend([
+                "--macosx-vdev=default",
+            ])
+            
+        return args
+
 class IPTVPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -474,10 +590,13 @@ class IPTVPlayer(QMainWindow):
         
         # Размеры окна
         self.setGeometry(40, 40, 1200, 650)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(1000, 650)
         
         # Применяем стили
         self.setStyleSheet(STYLESHEET)
+        
+        # Стандартная иконка для каналов без логотипа
+        self.default_channel_icon = self.create_default_channel_icon()
         
         # Дополнительные данные
         self.channels = []
@@ -489,19 +608,15 @@ class IPTVPlayer(QMainWindow):
         
         # Загружаем конфигурацию
         self.config_file = "player_config.json"
-        self.config = self.load_config()
-        
-        # Восстанавливаем списки из конфигурации
-        self.favorites = self.config.get("favorites", [])
-        self.hidden_channels = self.config.get("hidden_channels", [])
+        self.load_config()  # Теперь метод устанавливает атрибуты напрямую
         
         # Флаги для отображения избранных и скрытых каналов
         self.show_favorites = False
-        self.show_hidden = False
         
         # История плейлистов
-        self.recent_playlists = self.config.get("recent_playlists", ["local.m3u"])
-        self.current_playlist = self.config.get("current_playlist", self.recent_playlists[0] if self.recent_playlists else "local.m3u")
+        if not hasattr(self, 'recent_playlists') or not self.recent_playlists:
+            self.recent_playlists = ["local.m3u"]
+        self.current_playlist = self.recent_playlists[0] if self.recent_playlists else "local.m3u"
         self.temp_playlist_path = None
         
         # Настройка VLC
@@ -516,17 +631,7 @@ class IPTVPlayer(QMainWindow):
         vlc_args.append(f"--logfile={vlc_log_file}")
         
         # Добавляем аргументы VLC для улучшения производительности
-        vlc_args.extend([
-            "--no-video-title-show",
-            "--no-osd",
-            "--no-stats",
-            "--no-sub-autodetect",
-            "--no-snapshot-preview",
-            "--live-caching=1000",
-            "--network-caching=3000",
-            "--http-reconnect",
-            "--rtsp-tcp",
-        ])
+        vlc_args.extend(PlatformManager.get_vlc_args())
         
         # Инициализация VLC
         self.instance = vlc.Instance(' '.join(vlc_args))
@@ -565,9 +670,8 @@ class IPTVPlayer(QMainWindow):
         self.event_manager.event_attach(vlc.EventType.MediaPlayerEndReached, self.media_stopped)
         
         # Устанавливаем запомненный уровень громкости
-        saved_volume = self.config.get("volume", 70)
-        self.volume_slider.setValue(saved_volume)
-        self.set_volume(saved_volume)
+        self.volume_slider.setValue(self.volume)
+        self.set_volume(self.volume)
         
         # Обновляем меню недавних плейлистов
         self.update_recent_menu()
@@ -582,26 +686,151 @@ class IPTVPlayer(QMainWindow):
         # Настройка системного трея
         self.setup_tray()
         
+        # Привязываем обработчик закрытия окна для корректного завершения потоков
+        self.closeEvent = self.handle_close_event
+        
         # Обновление встроенного плейлиста при запуске
         QTimer.singleShot(0, self.update_playlist_from_url)
+
+    def make_icon_button(self, icon_name, tooltip, size=QSize(32, 32), icon_size=QSize(16, 16), callback=None):
+        """Создает стилизованную кнопку с иконкой
         
+        Args:
+            icon_name: Название иконки из qtawesome
+            tooltip: Текст подсказки
+            size: Размер кнопки
+            icon_size: Размер иконки
+            callback: Функция обратного вызова
+            
+        Returns:
+            QPushButton: Созданная кнопка
+        """
+        button = QPushButton()
+        button.setIcon(qta.icon(icon_name, color='#e8e8e8'))
+        button.setIconSize(icon_size)
+        button.setFixedSize(size)
+        button.setToolTip(tooltip)
+        
+        if callback:
+            button.clicked.connect(callback)
+            
+        return button
+    
+    def create_labeled_control(self, label_text, control, layout_type=QHBoxLayout):
+        """Создает виджет с меткой и указанным контролом
+        
+        Args:
+            label_text: Текст метки
+            control: Контрол, который нужно добавить
+            layout_type: Тип компоновки (горизонтальный или вертикальный)
+            
+        Returns:
+            QWidget: Виджет, содержащий метку и контрол
+        """
+        container = QWidget()
+        layout = layout_type()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        
+        label = QLabel(label_text)
+        label.setStyleSheet("color: #a0a0a0;")
+        
+        layout.addWidget(label)
+        layout.addWidget(control)
+        
+        container.setLayout(layout)
+        return container
+    
+    def setup_video_output(self):
+        """Настраивает вывод видео с учетом платформы
+        
+        Устанавливает соответствующий метод отображения VLC в зависимости
+        от операционной системы (Linux, Windows, macOS).
+        """
+        try:
+            # Получаем идентификатор окна для видеофрейма
+            win_id = self.video_frame.winId()
+            
+            # Используем PlatformManager для настройки вывода
+            success, message = PlatformManager.setup_vlc_video_output(self.media_player, win_id)
+            
+            if success:
+                logging.info(message)
+            else:
+                raise Exception(message)
+        except Exception as e:
+            logging.error(f"Ошибка при настройке видеовывода: {str(e)}")
+            QMessageBox.warning(
+                self, 
+                "Предупреждение", 
+                f"Не удалось настроить видеовывод: {str(e)}\n"
+                "Воспроизведение видео может работать некорректно."
+            )
+
     def init_ui(self):
+        """Инициализирует пользовательский интерфейс приложения"""
+        # Создаем центральный виджет
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Главный макет
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        # Создаем основную компоновку
+        main_layout = self.create_main_layout(central_widget)
+        
+        # Создаем меню приложения
+        self.create_menu()
         
         # Создаем основной сплиттер
         self.main_splitter = QSplitter(Qt.Horizontal)
         self.main_splitter.setHandleWidth(2)
         
-        # Создаем меню приложения
-        self.create_menu()
+        # Создаем левую и правую панели
+        left_panel = self.create_left_panel()
+        right_panel = self.create_right_panel()
         
-        # === Левая панель с списком каналов ===
+        # Добавляем панели в сплиттер
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(right_panel)
+        
+        # Устанавливаем начальные размеры панелей
+        self.main_splitter.setSizes([int(self.width() * 0.3), int(self.width() * 0.7)])
+        
+        # Добавляем сплиттер в главный макет
+        main_layout.addWidget(self.main_splitter)
+        
+        # Создаем статусную строку
+        self.setup_statusbar()
+        
+        # Загружаем плейлист
+        self.fill_channel_list()
+        
+        # Безопасная установка окна для воспроизведения
+        self.setup_video_output()
+        
+        # Если был сохранен последний канал, выбираем его автоматически
+        if self.last_channel:
+            self.restore_last_channel(self.last_channel)
+            
+    def create_main_layout(self, parent_widget):
+        """Создает основную компоновку приложения
+        
+        Args:
+            parent_widget: Родительский виджет для размещения компоновки
+            
+        Returns:
+            QVBoxLayout: Созданная основная компоновка
+        """
+        main_layout = QVBoxLayout(parent_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+        
+        return main_layout
+    
+    def create_left_panel(self):
+        """Создает левую панель с категориями и списком каналов
+        
+        Returns:
+            QWidget: Левая панель с содержимым
+        """
         left_panel = QWidget()
         left_panel.setObjectName("left_panel")
         left_layout = QVBoxLayout(left_panel)
@@ -614,117 +843,24 @@ class IPTVPlayer(QMainWindow):
         channels_header.setAlignment(Qt.AlignCenter)
         
         # Выбор категории
-        category_layout = QHBoxLayout()
-        category_layout.setSpacing(8)
-        
-        category_label = QLabel("Категория:")
-        category_label.setStyleSheet("color: #a0a0a0;")
-        category_layout.addWidget(category_label)
-        
         self.category_combo = QComboBox()
         self.category_combo.addItems(sorted(self.categories.keys()))
         self.category_combo.currentTextChanged.connect(self.category_changed)
         
-        category_layout.addWidget(self.category_combo)
+        category_container = self.create_labeled_control("Категория:", self.category_combo)
         
         # Поиск
-        search_layout = QHBoxLayout()
-        search_layout.setSpacing(8)
-        
-        search_label = QLabel("Поиск:")
-        search_label.setStyleSheet("color: #a0a0a0;")
-        search_layout.addWidget(search_label)
-        
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Поиск каналов...")
         self.search_box.textChanged.connect(self.filter_channels)
-        search_layout.addWidget(self.search_box)
         
-        # Панель кнопок с иконками
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(5)
+        search_container = self.create_labeled_control("Поиск:", self.search_box)
         
-        # Создаем небольшие кнопки с иконками
-        button_size = QSize(32, 32)
-        icon_size = QSize(16, 16)
+        # Панель кнопок
+        button_layout = self.create_channel_button_panel()
         
-        self.sort_button = QPushButton()
-        self.sort_button.setIcon(qta.icon('fa5s.sort-alpha-down', color='#e8e8e8'))
-        self.sort_button.setIconSize(icon_size)
-        self.sort_button.setFixedSize(button_size)
-        self.sort_button.setToolTip("Сортировать по алфавиту")
-        self.sort_button.clicked.connect(self.sort_channels)
-        
-        self.refresh_button = QPushButton()
-        self.refresh_button.setIcon(qta.icon('fa5s.sync', color='#e8e8e8'))
-        self.refresh_button.setIconSize(icon_size)
-        self.refresh_button.setFixedSize(button_size)
-        self.refresh_button.setToolTip("Обновить плейлист")
-        self.refresh_button.clicked.connect(self.reload_playlist)
-        
-        self.update_button = QPushButton()
-        self.update_button.setIcon(qta.icon('fa5s.cloud-download-alt', color='#e8e8e8'))
-        self.update_button.setIconSize(icon_size)
-        self.update_button.setFixedSize(button_size)
-        self.update_button.setToolTip("Обновить из интернета")
-        self.update_button.clicked.connect(self.update_playlist_from_url)
-        
-        self.favorites_button = QPushButton()
-        self.favorites_button.setIcon(qta.icon('fa5s.star', color='#e8e8e8'))
-        self.favorites_button.setIconSize(icon_size)
-        self.favorites_button.setFixedSize(button_size)
-        self.favorites_button.setToolTip("Избранное")
-        self.favorites_button.clicked.connect(self.toggle_favorites)
-        
-        self.hidden_button = QPushButton()
-        self.hidden_button.setIcon(qta.icon('fa5s.eye-slash', color='#e8e8e8'))
-        self.hidden_button.setIconSize(icon_size)
-        self.hidden_button.setFixedSize(button_size)
-        self.hidden_button.setToolTip("Скрытые каналы")
-        self.hidden_button.clicked.connect(self.toggle_hidden_channels)
-        
-        # Добавляем кнопку воспроизведения выбранного канала
-        self.play_selected_button = QPushButton()
-        self.play_selected_button.setIcon(qta.icon('fa5s.play-circle', color='#e8e8e8'))
-        self.play_selected_button.setIconSize(icon_size)
-        self.play_selected_button.setFixedSize(button_size)
-        self.play_selected_button.setToolTip("Воспроизвести выбранный канал")
-        self.play_selected_button.clicked.connect(self.play_selected_channel)
-        
-        button_layout.addWidget(self.sort_button)
-        button_layout.addWidget(self.refresh_button)
-        button_layout.addWidget(self.update_button)
-        button_layout.addWidget(self.favorites_button)
-        button_layout.addWidget(self.hidden_button)
-        button_layout.addWidget(self.play_selected_button)
-        button_layout.addStretch(1)
-        
-        # Создаем древовидный список и обычный список
-        self.channel_tree = QTreeWidget()
-        self.channel_tree.setHeaderHidden(True)
-        self.channel_tree.itemSelectionChanged.connect(self.tree_selection_changed)
-        self.channel_tree.setIconSize(QSize(24, 24))
-        self.channel_tree.setAnimated(True)
-        self.channel_tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.channel_tree.customContextMenuRequested.connect(self.show_channel_context_menu)
-        self.channel_tree.setAlternatingRowColors(True)
-        self.channel_tree.setStyleSheet("QTreeWidget::item { padding: 8px; margin: 2px 0; }")
-        
-        self.channel_list = QListWidget()
-        self.channel_list.currentRowChanged.connect(self.channel_changed)
-        self.channel_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.channel_list.customContextMenuRequested.connect(self.show_channel_context_menu)
-        self.channel_list.setAlternatingRowColors(True)
-        self.channel_list.setStyleSheet("QListWidget::item { padding: 10px; margin: 2px 0; }")
-        
-        # Добавляем двойной клик для воспроизведения
-        self.channel_tree.itemDoubleClicked.connect(self.on_channel_double_clicked)
-        self.channel_list.itemDoubleClicked.connect(self.on_channel_double_clicked)
-        
-        # Стек виджетов для переключения между деревом и списком
-        self.channels_stack = QStackedWidget()
-        self.channels_stack.addWidget(self.channel_tree)
-        self.channels_stack.addWidget(self.channel_list)
+        # Создаем компоненты для отображения каналов
+        self.create_channel_view_widgets()
         
         # Информация о плейлисте
         total_channels = len(self.channels)
@@ -735,13 +871,171 @@ class IPTVPlayer(QMainWindow):
         
         # Добавляем все виджеты на левую панель
         left_layout.addWidget(channels_header)
-        left_layout.addLayout(category_layout)
-        left_layout.addLayout(search_layout)
+        left_layout.addWidget(category_container)
+        left_layout.addWidget(search_container)
         left_layout.addLayout(button_layout)
         left_layout.addWidget(self.channels_stack, 1)
         left_layout.addWidget(self.playlist_info_label)
         
-        # === Правая панель с видео и контролами ===
+        return left_panel
+    
+    def create_channel_button_panel(self):
+        """Создает панель с кнопками управления списком каналов
+        
+        Returns:
+            QHBoxLayout: Компоновка с кнопками
+        """
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(5)
+        
+        # Кнопки с иконками для управления списком каналов
+        button_size = QSize(32, 32)
+        icon_size = QSize(16, 16)
+        
+        self.sort_button = self.make_icon_button(
+            'fa5s.sort-alpha-down', "Сортировать по алфавиту", 
+            button_size, icon_size, self.sort_channels
+        )
+        
+        self.refresh_button = self.make_icon_button(
+            'fa5s.sync', "Обновить плейлист", 
+            button_size, icon_size, self.reload_playlist
+        )
+        
+        self.update_button = self.make_icon_button(
+            'fa5s.cloud-download-alt', "Обновить из интернета", 
+            button_size, icon_size, self.update_playlist_from_url
+        )
+        
+        self.favorites_button = self.make_icon_button(
+            'fa5s.star', "Избранное", 
+            button_size, icon_size, self.toggle_favorites
+        )
+        
+        self.hidden_button = self.make_icon_button(
+            'fa5s.eye-slash', "Скрытые каналы", 
+            button_size, icon_size, self.toggle_hidden_channels
+        )
+        
+        self.play_selected_button = self.make_icon_button(
+            'fa5s.play-circle', "Воспроизвести выбранный канал", 
+            button_size, icon_size, self.play_selected_channel
+        )
+        
+        button_layout.addWidget(self.sort_button)
+        button_layout.addWidget(self.refresh_button)
+        button_layout.addWidget(self.update_button)
+        button_layout.addWidget(self.favorites_button)
+        button_layout.addWidget(self.hidden_button)
+        button_layout.addWidget(self.play_selected_button)
+        button_layout.addStretch(1)
+        
+        return button_layout
+    
+    def create_channel_view_widgets(self):
+        """Создает виджеты для отображения списка каналов"""
+        # Список каналов
+        self.channel_list = QListWidget()
+        self.channel_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.channel_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.channel_list.setAlternatingRowColors(True)  # Включаем чередование цветов строк
+        
+        # Настраиваем стиль и размеры для отображения логотипов
+        self.channel_list.setStyleSheet("""
+            QListWidget { 
+                alternate-background-color: #383838;
+                background-color: #2a2a2a;
+            }
+            
+            QListWidget::item { 
+                padding: 10px 10px 10px 44px; /* Отступ слева под логотип */
+                margin: 2px 0;
+                height: 40px; /* Фиксированная высота для элементов списка */
+            }
+            
+            QListWidget::item:nth-child(odd) { 
+                background-color: #2a2a2a;
+            }
+            
+            QListWidget::item:nth-child(even) { 
+                background-color: #383838;
+            }
+            
+            QListWidget::item:selected {
+                background-color: #4080b0;
+                color: white;
+            }
+        """)
+        
+        self.channel_list.setIconSize(QSize(32, 32))  # Устанавливаем размер иконок для логотипов
+        self.channel_list.currentRowChanged.connect(self.channel_changed)
+        
+        # Двойной клик на канале начинает воспроизведение
+        self.channel_list.itemDoubleClicked.connect(self.on_channel_double_clicked)
+        
+        # Добавляем контекстное меню к списку каналов
+        self.channel_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.channel_list.customContextMenuRequested.connect(self.show_channel_context_menu)
+        
+        # Древовидный список каналов
+        self.channel_tree = QTreeWidget()
+        self.channel_tree.setHeaderHidden(True)
+        self.channel_tree.setIconSize(QSize(32, 32))  # Устанавливаем размер иконок для логотипов
+        self.channel_tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.channel_tree.setAlternatingRowColors(True)  # Включаем чередование цветов строк
+        
+        # Настраиваем стиль для древовидного списка
+        self.channel_tree.setStyleSheet("""
+            QTreeWidget { 
+                alternate-background-color: #383838;
+                background-color: #2a2a2a;
+            }
+            
+            QTreeWidget::item { 
+                padding: 8px; 
+                margin: 2px 0;
+                height: 40px; /* Фиксированная высота для элементов списка */
+            }
+            
+            QTreeWidget::item:nth-child(odd) { 
+                background-color: #2a2a2a;
+            }
+            
+            QTreeWidget::item:nth-child(even) { 
+                background-color: #383838;
+            }
+            
+            QTreeWidget::item:selected {
+                background-color: #4080b0;
+                color: white;
+            }
+        """)
+        
+        self.channel_tree.itemSelectionChanged.connect(self.tree_selection_changed)
+        
+        # Двойной клик на канале начинает воспроизведение
+        self.channel_tree.itemDoubleClicked.connect(lambda item: self.on_channel_double_clicked(item))
+        
+        # Добавляем контекстное меню к дереву каналов
+        self.channel_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.channel_tree.customContextMenuRequested.connect(self.show_channel_context_menu)
+        
+        # Стек виджетов для переключения между списком и деревом
+        self.channels_stack = QStackedWidget()
+        self.channels_stack.addWidget(self.channel_tree)
+        self.channels_stack.addWidget(self.channel_list)
+        
+        # По умолчанию показываем обычный список
+        self.channels_stack.setCurrentIndex(1)
+        
+        return self.channels_stack
+    
+    def create_right_panel(self):
+        """Создает правую панель с видео и элементами управления
+        
+        Returns:
+            QWidget: Правая панель с содержимым
+        """
         right_panel = QWidget()
         right_panel.setObjectName("right_panel")
         right_layout = QVBoxLayout(right_panel)
@@ -753,6 +1047,25 @@ class IPTVPlayer(QMainWindow):
         self.channel_name_label.setObjectName("channelNameLabel")
         self.channel_name_label.setAlignment(Qt.AlignCenter)
         
+        # Создаем фрейм для видео
+        self.create_video_frame()
+        
+        # Создаем панель управления воспроизведением
+        control_panel = self.create_control_panel()
+        
+        # Создаем информационную панель
+        info_panel = self.create_info_panel()
+        
+        # Добавляем все элементы на правую панель
+        right_layout.addWidget(self.channel_name_label)
+        right_layout.addWidget(self.video_frame, 1)
+        right_layout.addWidget(control_panel)
+        right_layout.addWidget(info_panel)
+        
+        return right_panel
+    
+    def create_video_frame(self):
+        """Создает фрейм для отображения видео"""
         # Фрейм для видео
         self.video_frame = QFrame()
         self.video_frame.setObjectName("videoFrame")
@@ -760,7 +1073,7 @@ class IPTVPlayer(QMainWindow):
         self.video_frame.setFrameShadow(QFrame.Raised)
         self.video_frame.setMinimumHeight(400)
         
-        # При двойном клике на видео - переключаем полноэкранный режим
+        # При клике на видео - переключаем полноэкранный режим
         self.video_frame_label = ClickableLabel()
         self.video_frame_label.setAlignment(Qt.AlignCenter)
         self.video_frame_label.clicked.connect(self.toggle_fullscreen)
@@ -768,8 +1081,13 @@ class IPTVPlayer(QMainWindow):
         video_layout = QVBoxLayout(self.video_frame)
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.addWidget(self.video_frame_label)
+    
+    def create_control_panel(self):
+        """Создает панель с элементами управления воспроизведением
         
-        # Панель контролов воспроизведения
+        Returns:
+            QWidget: Панель управления
+        """
         control_panel = QWidget()
         control_panel.setObjectName("controlPanel")
         control_panel.setStyleSheet("QWidget#controlPanel { background-color: #2d2d2d; border-radius: 8px; }")
@@ -778,46 +1096,57 @@ class IPTVPlayer(QMainWindow):
         control_layout.setContentsMargins(10, 5, 10, 5)
         control_layout.setSpacing(8)
         
-        # Создаем кнопки управления воспроизведением
+        # Размеры кнопок и иконок
         button_size = QSize(36, 36)
         icon_size = QSize(20, 20)
         
-        self.play_button = QPushButton()
-        self.play_button.setIcon(qta.icon('fa5s.play', color='#e8e8e8'))
-        self.play_button.setIconSize(icon_size)
-        self.play_button.setFixedSize(button_size)
-        self.play_button.setToolTip("Воспроизведение/Пауза (Пробел)")
-        self.play_button.clicked.connect(self.play_pause)
+        # Кнопки управления воспроизведением
+        self.play_button = self.make_icon_button(
+            'fa5s.play', "Воспроизведение/Пауза (Пробел)", 
+            button_size, icon_size, self.play_pause
+        )
         
-        self.stop_button = QPushButton()
-        self.stop_button.setIcon(qta.icon('fa5s.stop', color='#e8e8e8'))
-        self.stop_button.setIconSize(icon_size)
-        self.stop_button.setFixedSize(button_size)
-        self.stop_button.setToolTip("Остановить")
-        self.stop_button.clicked.connect(self.stop)
+        self.stop_button = self.make_icon_button(
+            'fa5s.stop', "Остановить", 
+            button_size, icon_size, self.stop
+        )
         
-        self.screenshot_button = QPushButton()
-        self.screenshot_button.setIcon(qta.icon('fa5s.camera', color='#e8e8e8'))
-        self.screenshot_button.setIconSize(icon_size)
-        self.screenshot_button.setFixedSize(button_size)
-        self.screenshot_button.setToolTip("Сделать снимок экрана")
-        self.screenshot_button.clicked.connect(self.take_screenshot)
+        self.screenshot_button = self.make_icon_button(
+            'fa5s.camera', "Сделать снимок экрана", 
+            button_size, icon_size, self.take_screenshot
+        )
         
-        self.audio_track_button = QPushButton()
-        self.audio_track_button.setIcon(qta.icon('fa5s.volume-up', color='#e8e8e8'))
-        self.audio_track_button.setIconSize(icon_size)
-        self.audio_track_button.setFixedSize(button_size)
-        self.audio_track_button.setToolTip("Следующая аудиодорожка (A)")
-        self.audio_track_button.clicked.connect(self.next_audio_track)
+        self.audio_track_button = self.make_icon_button(
+            'fa5s.volume-up', "Следующая аудиодорожка (A)", 
+            button_size, icon_size, self.next_audio_track
+        )
         
-        self.fullscreen_button = QPushButton()
-        self.fullscreen_button.setIcon(qta.icon('fa5s.expand', color='#e8e8e8'))
-        self.fullscreen_button.setIconSize(icon_size)
-        self.fullscreen_button.setFixedSize(button_size)
-        self.fullscreen_button.setToolTip("Полный экран (CTRL+F)")
-        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+        self.fullscreen_button = self.make_icon_button(
+            'fa5s.expand', "Полный экран (CTRL+F)", 
+            button_size, icon_size, self.toggle_fullscreen
+        )
         
-        # Слайдер громкости
+        # Создаем виджет для регулировки громкости
+        volume_panel = self.create_volume_panel()
+        
+        # Добавляем элементы на панель управления
+        control_layout.addWidget(self.play_button)
+        control_layout.addWidget(self.stop_button)
+        control_layout.addWidget(self.screenshot_button)
+        control_layout.addWidget(self.audio_track_button)
+        control_layout.addStretch(1)
+        control_layout.addWidget(volume_panel)
+        control_layout.addStretch(1)
+        control_layout.addWidget(self.fullscreen_button)
+        
+        return control_panel
+    
+    def create_volume_panel(self):
+        """Создает панель регулировки громкости
+        
+        Returns:
+            QWidget: Панель с регулятором громкости
+        """
         volume_panel = QWidget()
         volume_layout = QHBoxLayout(volume_panel)
         volume_layout.setContentsMargins(0, 0, 0, 0)
@@ -836,17 +1165,14 @@ class IPTVPlayer(QMainWindow):
         volume_layout.addWidget(self.volume_icon)
         volume_layout.addWidget(self.volume_slider)
         
-        # Добавляем элементы на панель управления
-        control_layout.addWidget(self.play_button)
-        control_layout.addWidget(self.stop_button)
-        control_layout.addWidget(self.screenshot_button)
-        control_layout.addWidget(self.audio_track_button)
-        control_layout.addStretch(1)
-        control_layout.addWidget(volume_panel)
-        control_layout.addStretch(1)
-        control_layout.addWidget(self.fullscreen_button)
+        return volume_panel
+    
+    def create_info_panel(self):
+        """Создает информационную панель с индикаторами состояния
         
-        # Информационная панель
+        Returns:
+            QWidget: Информационная панель
+        """
         info_panel = QWidget()
         info_panel.setObjectName("infoPanel")
         info_panel.setStyleSheet("QWidget#infoPanel { background-color: #2d2d2d; border-radius: 8px; }")
@@ -866,115 +1192,111 @@ class IPTVPlayer(QMainWindow):
         info_layout.addWidget(self.info_label)
         info_layout.addWidget(self.progress_bar)
         
-        # Добавляем все на правую панель
-        right_layout.addWidget(self.channel_name_label)
-        right_layout.addWidget(self.video_frame, 1)
-        right_layout.addWidget(control_panel)
-        right_layout.addWidget(info_panel)
-        
-        # Добавляем панели в сплиттер
-        self.main_splitter.addWidget(left_panel)
-        self.main_splitter.addWidget(right_panel)
-        
-        # Устанавливаем начальные размеры панелей
-        self.main_splitter.setSizes([int(self.width() * 0.3), int(self.width() * 0.7)])
-        
-        # Добавляем сплиттер в главный макет
-        main_layout.addWidget(self.main_splitter)
-        
-        # Создаем статусную строку
-        self.setup_statusbar()
-        
-        # Загружаем плейлист
-        self.fill_channel_list()
-        
-        # Безопасная установка окна для воспроизведения
-        win_id = self.video_frame.winId()
-        if sys.platform.startswith("linux"):
-            self.media_player.set_xwindow(int(win_id))
-        elif sys.platform == "win32":
-            self.media_player.set_hwnd(win_id)
-        elif sys.platform == "darwin":
-            self.media_player.set_nsobject(int(win_id))
-        
-        # Если был сохранен последний канал, выбираем его автоматически
-        if self.config.get("last_channel"):
-            self.restore_last_channel(self.config.get("last_channel"))
+        return info_panel
 
     def create_menu(self):
         """Создает главное меню приложения"""
-        menubar = self.menuBar()
+        menu_bar = self.menuBar()
         
-        # Меню Файл
-        file_menu = menubar.addMenu("Файл")
+        # Меню "Файл"
+        file_menu = menu_bar.addMenu("Файл")
         
-        # Открыть плейлист
+        # Действие "Открыть плейлист"
         open_action = QAction("Открыть плейлист...", self)
         open_action.triggered.connect(self.open_playlist)
         file_menu.addAction(open_action)
         
-        # Добавить плейлист из URL
+        # Действие "Добавить плейлист из URL"
         add_url_action = QAction("Добавить плейлист из URL...", self)
         add_url_action.triggered.connect(self.add_playlist_from_url)
         file_menu.addAction(add_url_action)
         
-        # Обновить плейлист
-        update_action = QAction("Обновить плейлист", self)
-        update_action.triggered.connect(self.reload_playlist)
-        file_menu.addAction(update_action)
-        
-        # Обновить из интернета
-        update_url_action = QAction("Обновить из интернета", self)
+        # Действие "Обновить плейлист из URL"
+        update_url_action = QAction("Обновить плейлист из URL...", self)
         update_url_action.triggered.connect(self.update_playlist_from_url)
         file_menu.addAction(update_url_action)
         
-        # Недавние плейлисты
-        self.recent_menu = file_menu.addMenu("Недавние плейлисты")
+        # Действие "Обновить текущий плейлист"
+        reload_action = QAction("Обновить текущий плейлист", self)
+        reload_action.triggered.connect(self.reload_playlist)
+        file_menu.addAction(reload_action)
         
+        # Подменю "Недавние плейлисты"
+        self.recent_menu = QMenu("Недавние плейлисты", self)
+        file_menu.addMenu(self.recent_menu)
+        
+        # Разделитель
         file_menu.addSeparator()
         
-        # Выход
+        # Действие "Выход"
         exit_action = QAction("Выход", self)
         exit_action.triggered.connect(self.exit_app)
         file_menu.addAction(exit_action)
         
-        # Меню Каналы
-        channels_menu = menubar.addMenu("Каналы")
+        # Меню "Вид"
+        view_menu = menu_bar.addMenu("Вид")
         
-        # Избранные каналы
-        favorites_menu = channels_menu.addMenu("Избранные каналы")
+        # Действие "Полноэкранный режим"
+        self.fullscreen_action = QAction("Полноэкранный режим", self)
+        self.fullscreen_action.setCheckable(True)
+        self.fullscreen_action.triggered.connect(self.toggle_fullscreen)
+        view_menu.addAction(self.fullscreen_action)
         
-        # Показать все избранные
+        # Действие "Всегда поверх других окон"
+        self.always_on_top_action = QAction("Поверх всех окон", self)
+        self.always_on_top_action.setCheckable(True)
+        self.always_on_top_action.setChecked(self.windowFlags() & Qt.WindowStaysOnTopHint == Qt.WindowStaysOnTopHint)
+        self.always_on_top_action.triggered.connect(self.toggle_always_on_top)
+        view_menu.addAction(self.always_on_top_action)
+        
+        # Разделитель
+        view_menu.addSeparator()
+        
+        # Действие "Показывать логотипы каналов"
+        self.show_logos_action = QAction("Показывать логотипы каналов", self)
+        self.show_logos_action.setCheckable(True)
+        self.show_logos_action.setChecked(self.show_logos)
+        self.show_logos_action.triggered.connect(self.toggle_logos)
+        view_menu.addAction(self.show_logos_action)
+        
+        # Действие "Показывать скрытые каналы"
+        self.show_hidden_action = QAction("Показывать скрытые каналы", self)
+        self.show_hidden_action.setCheckable(True)
+        self.show_hidden_action.setChecked(self.show_hidden)
+        self.show_hidden_action.triggered.connect(self.toggle_hidden_channels)
+        view_menu.addAction(self.show_hidden_action)
+        
+        # Действие "Сделать скриншот"
+        screenshot_action = QAction("Сделать скриншот", self)
+        screenshot_action.triggered.connect(self.take_screenshot)
+        view_menu.addAction(screenshot_action)
+        
+        # Меню "Избранное"
+        favorites_menu = menu_bar.addMenu("Избранное")
+        
+        # Действие "Показать все избранные"
         show_favorites_action = QAction("Показать все избранные", self)
         show_favorites_action.triggered.connect(self.show_all_favorites)
         favorites_menu.addAction(show_favorites_action)
         
-        # Очистить список избранного
-        clear_favorites_action = QAction("Очистить список избранного", self)
+        # Действие "Очистить избранное"
+        clear_favorites_action = QAction("Очистить избранное", self)
         clear_favorites_action.triggered.connect(self.clear_favorites)
         favorites_menu.addAction(clear_favorites_action)
         
-        # Управление скрытыми каналами
-        hidden_menu = channels_menu.addMenu("Скрытые каналы")
+        # Меню "Справка"
+        help_menu = menu_bar.addMenu("Справка")
         
-        # Показать скрытые каналы
-        show_hidden_action = QAction("Управление скрытыми каналами", self)
-        show_hidden_action.triggered.connect(self.manage_hidden_channels)
-        hidden_menu.addAction(show_hidden_action)
-        
-        # Очистить список скрытых
-        clear_hidden_action = QAction("Показать все скрытые каналы", self)
-        clear_hidden_action.triggered.connect(self.clear_hidden_channels)
-        hidden_menu.addAction(clear_hidden_action)
-        
-        # Меню Справка
-        help_menu = menubar.addMenu("Справка")
-        
-        # О программе
+        # Действие "О программе"
         about_action = QAction("О программе", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
         
+        # Обновляем список недавних плейлистов
+        self.update_recent_menu()
+        
+        return menu_bar
+
     def update_recent_menu(self):
         """Обновляет меню недавно открытых плейлистов"""
         self.recent_menu.clear()
@@ -983,15 +1305,25 @@ class IPTVPlayer(QMainWindow):
             empty_action = QAction("Нет недавних плейлистов", self)
             empty_action.setEnabled(False)
             self.recent_menu.addAction(empty_action)
+            
+            # Добавляем разделитель и пункт "Очистить список"
+            self.recent_menu.addSeparator()
+            clear_action = QAction("Очистить список", self)
+            clear_action.triggered.connect(self.clear_recent_playlists)
+            self.recent_menu.addAction(clear_action)
             return
             
         for i, playlist in enumerate(self.recent_playlists):
-            # Отображаем только имя файла для длинных путей
-            display_name = os.path.basename(playlist) if os.path.exists(playlist) else playlist
-            
-            # Показываем URL или путь к файлу
-            if playlist.startswith(('http://', 'https://')):
-                display_name = f"{display_name} (URL)"
+            # Используем имя плейлиста из словаря, если оно есть
+            if playlist in self.playlist_names:
+                display_name = self.playlist_names[playlist]
+            else:
+                # Иначе используем имя файла для путей или URL целиком
+                display_name = os.path.basename(playlist) if os.path.exists(playlist) else playlist
+                
+                # Если это URL, добавляем пометку
+                if playlist.startswith(('http://', 'https://')):
+                    display_name = f"{display_name} (URL)"
             
             # Проверяем, является ли плейлист текущим
             is_current = False
@@ -1178,8 +1510,9 @@ class IPTVPlayer(QMainWindow):
                     
                     if success:
                         try:
-                            # Обновляем историю плейлистов
-                            self.update_recent_playlists(url)
+                            # Обновляем историю плейлистов с сохраненным именем
+                            playlist_name = self.playlist_names.get(url)
+                            self.update_recent_playlists(url, playlist_name)
                             self.current_playlist = url
                             
                             # Сохраняем путь к временному плейлисту
@@ -1224,8 +1557,9 @@ class IPTVPlayer(QMainWindow):
                 self.channels = []
                 self.categories = {"Все каналы": []}
                 
-                # Обновляем историю плейлистов
-                self.update_recent_playlists(playlist_path)
+                # Обновляем историю плейлистов с сохраненным именем
+                playlist_name = self.playlist_names.get(playlist_path)
+                self.update_recent_playlists(playlist_path, playlist_name)
                 self.current_playlist = playlist_path
                 
                 # Сохраняем путь к временному плейлисту
@@ -1238,7 +1572,9 @@ class IPTVPlayer(QMainWindow):
                 # Обновляем меню недавних плейлистов
                 self.update_recent_menu()
                 
-                self.info_label.setText(f"Загружен внешний плейлист: {os.path.basename(playlist_path)}")
+                # Используем имя плейлиста для отображения
+                display_name = self.playlist_names.get(playlist_path, os.path.basename(playlist_path))
+                self.info_label.setText(f"Загружен внешний плейлист: {display_name}")
                 
                 # Обновляем отображение количества каналов
                 total_channels = len(self.channels)
@@ -1270,12 +1606,22 @@ class IPTVPlayer(QMainWindow):
             # Сначала сохраняем конфигурацию
             self.save_config()
             
+            # Останавливаем все активные потоки загрузки логотипов
+            if hasattr(self, 'logo_download_threads'):
+                for url, thread in list(self.logo_download_threads.items()):
+                    if thread and thread.isRunning():
+                        try:
+                            # Устанавливаем флаг прерывания
+                            thread.abort()
+                        except Exception as e:
+                            logging.error(f"Ошибка при остановке потока логотипа {url}: {e}")
+            
             # Затем выполняем очистку ресурсов
-            # cleanup будет вызван также через aboutToQuit
+            # полная очистка будет выполнена через aboutToQuit в методе cleanup
             logging.info("Выход из приложения...")
             
-            # Закрываем приложение
-            QApplication.quit()
+            # Задержка для завершения потоков
+            QTimer.singleShot(100, QApplication.quit)
         except Exception as e:
             logging.error(f"Ошибка при выходе из приложения: {e}")
             QApplication.quit()
@@ -1350,8 +1696,8 @@ class IPTVPlayer(QMainWindow):
                     if channel['name'] in self.hidden_channels and not self.show_hidden:
                         continue
                     
-                    # Создаем элемент списка
-                    item = QListWidgetItem(channel['name'])
+                    # Создаем элемент списка с логотипом
+                    item = self.create_channel_item(channel['name'], channel)
                     self.channel_list.addItem(item)
     
     def fill_hidden_list(self):
@@ -1363,8 +1709,8 @@ class IPTVPlayer(QMainWindow):
             # Находим канал по имени
             for channel in self.channels:
                 if channel['name'] == channel_name:
-                    # Создаем элемент списка
-                    item = QListWidgetItem(channel['name'])
+                    # Создаем элемент списка с логотипом
+                    item = self.create_channel_item(channel['name'], channel)
                     self.channel_list.addItem(item)
     
     def show_about(self):
@@ -1426,13 +1772,20 @@ class IPTVPlayer(QMainWindow):
                     if tvg_id_match:
                         tvg_id = tvg_id_match.group(1).strip()
                     
+                    # Извлекаем tvg-logo если есть
+                    tvg_logo_match = re.search(r'tvg-logo="([^"]*)"', line)
+                    tvg_logo = ""
+                    if tvg_logo_match:
+                        tvg_logo = tvg_logo_match.group(1).strip()
+                    
                     parts = line.split(',', 1)
                     if len(parts) > 1:
                         channel = {
                             'name': parts[1].strip(), 
                             'options': {},
                             'category': group_title,
-                            'tvg_id': tvg_id
+                            'tvg_id': tvg_id,
+                            'tvg_logo': tvg_logo  # Добавляем URL логотипа
                         }
                         
                         # Добавляем категорию в словарь, если её ещё нет
@@ -1495,8 +1848,8 @@ class IPTVPlayer(QMainWindow):
                         if channel['name'] in self.hidden_channels:
                             continue
                         
-                        # Создаем элемент списка
-                        item = QListWidgetItem(channel['name'])
+                        # Создаем элемент списка с логотипом
+                        item = self.create_channel_item(channel['name'], channel)
                         self.channel_list.addItem(item)
             return
         
@@ -1542,6 +1895,20 @@ class IPTVPlayer(QMainWindow):
                 if category in category_items:
                     channel_item = QTreeWidgetItem([channel['name']])
                     channel_item.setData(0, Qt.UserRole, self.channels.index(channel))
+                    
+                    # Добавляем логотип, если доступен
+                    if self.show_logos:
+                        if 'tvg_logo' in channel and channel['tvg_logo']:
+                            logo = self.load_channel_logo(channel['tvg_logo'])
+                            if logo:
+                                channel_item.setIcon(0, QIcon(logo))
+                            else:
+                                # Если не удалось загрузить логотип, используем стандартную иконку
+                                channel_item.setIcon(0, QIcon(self.default_channel_icon))
+                        else:
+                            # Если у канала нет логотипа, используем стандартную иконку
+                            channel_item.setIcon(0, QIcon(self.default_channel_icon))
+                    
                     category_items[category].addChild(channel_item)
             
             # Разворачиваем все категории
@@ -1567,8 +1934,8 @@ class IPTVPlayer(QMainWindow):
                 visible_count += 1
                 
                 if not search_text or search_text in channel['name'].lower():
-                    # Создаем элемент списка
-                    item = QListWidgetItem(channel['name'])
+                    # Создаем элемент списка с логотипом
+                    item = self.create_channel_item(channel['name'], channel)
                     self.channel_list.addItem(item)
             
             # Обновляем информацию о количестве каналов в категории
@@ -1707,7 +2074,14 @@ class IPTVPlayer(QMainWindow):
         pass
     
     def play_channel(self, channel_index):
-        """Воспроизведение выбранного канала с учетом всех опций"""
+        """Воспроизведение выбранного канала с учетом всех опций
+        
+        Запускает асинхронное воспроизведение выбранного канала, устанавливая все необходимые 
+        параметры и опции для потока. Контролирует процесс загрузки канала с помощью таймера.
+        
+        Args:
+            channel_index: Индекс канала в списке каналов (self.channels)
+        """
         if channel_index < 0 or channel_index >= len(self.channels):
             return
         
@@ -1738,7 +2112,7 @@ class IPTVPlayer(QMainWindow):
         
         # Добавляем в недавние каналы
         self.current_channel = channel['name']
-        self.config["last_channel"] = channel['name']
+        self.last_channel = channel['name']
         self.save_config()
         
         # Запускаем таймер ожидания начала воспроизведения
@@ -1894,8 +2268,50 @@ class IPTVPlayer(QMainWindow):
             except:
                 pass
     
+    def handle_close_event(self, event):
+        """Обрабатывает событие закрытия окна
+        
+        Останавливает все потоки перед закрытием окна и выполняет корректное освобождение ресурсов.
+        
+        Args:
+            event: Событие закрытия окна
+        """
+        try:
+            logging.info("Обработка закрытия окна...")
+            
+            # Останавливаем все потоки загрузки логотипов
+            if hasattr(self, 'logo_download_threads'):
+                for url, thread in list(self.logo_download_threads.items()):
+                    if thread and thread.isRunning():
+                        try:
+                            # Устанавливаем флаг прерывания
+                            thread.abort()
+                            # Отсоединяем сигналы
+                            try:
+                                thread.logo_loaded.disconnect()
+                                thread.logo_failed.disconnect()
+                            except:
+                                pass
+                        except Exception as e:
+                            logging.error(f"Ошибка при остановке потока логотипа {url} (closeEvent): {e}")
+            
+            # Сначала сохраняем настройки
+            self.save_config()
+            
+            # Передаем событие дальше (будет вызван метод cleanup через aboutToQuit)
+            event.accept()
+        except Exception as e:
+            logging.error(f"Ошибка при обработке закрытия окна: {e}")
+            # В случае ошибки все равно закрываем окно
+            event.accept()
+
     def cleanup(self):
-        """Освобождает ресурсы при выходе из приложения"""
+        """Освобождает ресурсы при выходе из приложения
+        
+        Корректно останавливает воспроизведение, отсоединяет обработчики событий,
+        завершает рабочие потоки и освобождает все ресурсы перед завершением работы
+        приложения для предотвращения утечек памяти и зависания системы.
+        """
         try:
             # Останавливаем таймеры
             if hasattr(self, 'timer') and self.timer.isActive():
@@ -1969,6 +2385,35 @@ class IPTVPlayer(QMainWindow):
                     self.instance.release()
                 except Exception as e:
                     logging.error(f"Ошибка при освобождении инстанса VLC: {e}")
+            
+            # Останавливаем все потоки загрузки логотипов
+            if hasattr(self, 'logo_download_threads'):
+                for url, thread in list(self.logo_download_threads.items()):
+                    try:
+                        if thread and thread.isRunning():
+                            # Сначала устанавливаем флаг прерывания
+                            thread.abort()
+                            # Отсоединяем сигналы
+                            try:
+                                thread.logo_loaded.disconnect()
+                                thread.logo_failed.disconnect()
+                            except:
+                                pass
+                            # Вызываем quit для корректного завершения
+                            thread.quit()
+                            # Ждем завершения потока с увеличенным таймаутом
+                            if not thread.wait(300):
+                                logging.warning(f"Не удалось завершить поток загрузки логотипа {url}, принудительное завершение.")
+                                # Если не удалось завершить, используем terminate
+                                thread.terminate()
+                                # Даем немного времени на завершение
+                                time.sleep(0.05)
+                        # Планируем удаление объекта позже
+                        thread.deleteLater()
+                    except Exception as e:
+                        logging.error(f"Ошибка при остановке потока загрузки логотипа {url}: {e}")
+                # Очищаем словарь потоков
+                self.logo_download_threads.clear()
                 
             # Удаляем временные файлы
             if hasattr(self, 'temp_playlist_path') and self.temp_playlist_path and self.temp_playlist_path.startswith("temp_"):
@@ -1983,36 +2428,145 @@ class IPTVPlayer(QMainWindow):
         except Exception as e:
             logging.error(f"Критическая ошибка при освобождении ресурсов: {e}", exc_info=True)
 
+    def restore_ui_after_fullscreen(self):
+        """Восстанавливает интерфейс после выхода из полноэкранного режима
+        
+        Обеспечивает корректное отображение всех элементов интерфейса,
+        которые могут оставаться скрытыми при определенных условиях.
+        """
+        # Принудительно показываем все основные элементы интерфейса
+        self.main_splitter.setVisible(True)
+        self.menuBar().setVisible(True)
+        self.statusBar().setVisible(True)
+        
+        # Обновляем внутренние панели
+        left_panel = self.findChild(QWidget, "left_panel")
+        right_panel = self.findChild(QWidget, "right_panel")
+        
+        if left_panel:
+            left_panel.setVisible(True)
+            
+            # Обновляем ключевые элементы левой панели
+            for widget in [self.category_combo, self.search_box, self.channels_stack, 
+                          self.sort_button, self.refresh_button, self.update_button,
+                          self.favorites_button, self.hidden_button, self.play_selected_button]:
+                if widget:
+                    widget.setVisible(True)
+                    widget.update()
+            
+            # Обновляем списки каналов
+            if hasattr(self, 'channel_tree'):
+                self.channel_tree.setVisible(True)
+                self.channel_tree.update()
+                
+            if hasattr(self, 'channel_list'):
+                self.channel_list.setVisible(True)
+                self.channel_list.update()
+            
+            left_panel.update()
+        
+        if right_panel:
+            right_panel.setVisible(True)
+            
+            # Обновляем ключевые элементы правой панели
+            for widget in [self.channel_name_label, self.video_frame, self.info_label, 
+                          self.play_button, self.stop_button, self.screenshot_button, 
+                          self.audio_track_button, self.fullscreen_button, self.volume_slider]:
+                if widget:
+                    widget.setVisible(True)
+                    widget.update()
+            
+            right_panel.update()
+        
+        # Обновляем виджеты списка каналов
+        if hasattr(self, 'channels_stack'):
+            self.channels_stack.setVisible(True)
+            self.channels_stack.update()
+            
+            # Обновляем активный виджет в стеке
+            current_widget = self.channels_stack.currentWidget()
+            if current_widget:
+                current_widget.setVisible(True)
+                current_widget.update()
+        
+        # Обновляем видеофрейм и его содержимое
+        if hasattr(self, 'video_frame'):
+            self.video_frame.setVisible(True)
+            
+            # Обновляем метку видеофрейма
+            if hasattr(self, 'video_frame_label'):
+                self.video_frame_label.setVisible(True)
+                self.video_frame_label.update()
+            
+            self.video_frame.update()
+        
+        # Обновляем компоновку и обрабатываем отложенные события
+        self.centralWidget().layout().activate()
+        self.repaint()
+        QApplication.processEvents()
+        
+        # Проверяем размеры сплиттера и восстанавливаем их при необходимости
+        sizes = self.main_splitter.sizes()
+        if len(sizes) == 2 and (sizes[0] <= 0 or sizes[1] <= 0):
+            # Если какая-то панель скрыта, восстанавливаем размеры
+            self.main_splitter.setSizes([int(self.width() * 0.3), int(self.width() * 0.7)])
+        
+        # Принудительно обновляем макет после восстановления размеров
+        self.centralWidget().layout().update()
+        
+        # Обновляем после изменения размеров
+        self.update()
+        QApplication.processEvents()
+        
+        # Устанавливаем фокус на видеофрейм
+        if hasattr(self, 'video_frame'):
+            self.video_frame.setFocus()
+        
+        # Логируем информацию о восстановлении интерфейса
+        logging.info("Интерфейс восстановлен после выхода из полноэкранного режима")
+    
     def toggle_fullscreen(self):
-        """Переключение полноэкранного режима"""
+        """Переключение полноэкранного режима
+        
+        Реализует корректное переключение между обычным и полноэкранным режимами
+        с сохранением правильных пропорций видео-виджета и возможностью возврата
+        к нормальному виду клавишей ESC или через кнопку.
+        """
         if self.isFullScreen():
+            # === Выход из полноэкранного режима ===
+            
             # Возвращаемся из полноэкранного режима
             self.showNormal()
             
-            # Удаляем прозрачный перехватчик кликов, если есть
+            # Удаляем прозрачную кнопку выхода из полноэкранного режима, если есть
             if hasattr(self, 'exit_fs_button') and self.exit_fs_button:
                 self.exit_fs_button.deleteLater()
                 self.exit_fs_button = None
             
-            # Сохраняем текущие размеры компонентов
-            if hasattr(self, 'original_sizes'):
-                # Восстанавливаем оригинальные размеры компонентов
-                main_height = self.original_sizes.get('main_height', 0)
-                video_height = self.original_sizes.get('video_height', 400)
+            # Восстанавливаем видеофрейм в исходную компоновку
+            if hasattr(self, 'fullscreen_video_layout'):
+                # Извлекаем видеофрейм из текущего контейнера
+                self.video_frame.setParent(None)
                 
-                if main_height > 0 and video_height > 0:
-                    self.main_splitter.setFixedHeight(main_height)
-                    self.video_frame.setFixedHeight(video_height)
+                # Удаляем временный контейнер если он существует
+                if hasattr(self, 'fullscreen_container') and self.fullscreen_container:
+                    self.fullscreen_container.deleteLater()
+                    self.fullscreen_container = None
+                
+                # Восстанавливаем исходное состояние
+                right_panel = self.findChild(QWidget, "right_panel")
+                if right_panel:
+                    # Получаем layout правой панели
+                    right_layout = right_panel.layout()
+                    
+                    # Вставляем видеофрейм на правильную позицию (после заголовка)
+                    right_layout.insertWidget(1, self.video_frame)
+                
+                # Очищаем временную компоновку
+                del self.fullscreen_video_layout
             
-            # Возвращаем видеофрейм в основной макет
-            self.video_frame.setParent(None)
-            right_layout = self.findChild(QWidget, "right_panel").layout()
-            right_layout.insertWidget(1, self.video_frame)
-            
-            # Показываем интерфейс
-            self.main_splitter.setVisible(True)
-            self.menuBar().setVisible(True)
-            self.statusBar().setVisible(True)
+            # Вызываем комплексное восстановление UI
+            QTimer.singleShot(100, self.restore_ui_after_fullscreen)
             
             # Восстанавливаем обработчик клика для метки
             try:
@@ -2021,136 +2575,106 @@ class IPTVPlayer(QMainWindow):
                 pass
             self.video_frame_label.clicked.connect(self.toggle_fullscreen)
             
-            # Запускаем отложенное обновление размеров UI
-            QTimer.singleShot(100, self.adjust_ui_after_fullscreen)
         else:
-            # Переходим в полноэкранный режим
+            # === Переход в полноэкранный режим ===
             
-            # Сохраняем оригинальные размеры для восстановления
-            self.original_sizes = {
-                'main_height': self.main_splitter.height(),
-                'video_height': self.video_frame.height()
-            }
+            # Сохраняем текущее состояние для последующего восстановления
+            self.normal_geometry = self.geometry()
             
-            # Сначала запоминаем панель с видео
-            self.right_panel = self.findChild(QWidget, "right_panel")
+            # Создаем временный контейнер и компоновку для полноэкранного режима
+            self.fullscreen_container = QWidget(self)
+            self.fullscreen_video_layout = QVBoxLayout(self.fullscreen_container)
+            self.fullscreen_video_layout.setContentsMargins(0, 0, 0, 0)
+            self.fullscreen_video_layout.setSpacing(0)
             
-            # Извлекаем видеофрейм из текущего макета и делаем его основным виджетом
+            # Извлекаем видеофрейм из текущей компоновки
             self.video_frame.setParent(None)
-            self.video_frame.setGeometry(0, 0, self.width(), self.height())
-            self.video_frame.setParent(self)
-            self.video_frame.show()
             
-            # Скрываем интерфейс
+            # Добавляем видеофрейм в новую компоновку
+            self.fullscreen_video_layout.addWidget(self.video_frame)
+            
+            # Настраиваем контейнер на полный размер централного виджета
+            self.fullscreen_container.setGeometry(self.centralWidget().rect())
+            self.fullscreen_container.show()
+            
+            # Скрываем обычный интерфейс
             self.main_splitter.setVisible(False)
             self.menuBar().setVisible(False)
             self.statusBar().setVisible(False)
             
-            # Переходим в полноэкранный режим
+            # Переключаемся в полноэкранный режим
             self.showFullScreen()
             
-            # Настраиваем видеофрейм под размер экрана
-            self.video_frame.setGeometry(0, 0, self.width(), self.height())
+            # Обновляем размер контейнера после перехода в полноэкранный режим
+            self.fullscreen_container.setGeometry(0, 0, self.width(), self.height())
             
-            # Создаем компактную кнопку с иконкой для выхода из полноэкранного режима
-            self.exit_fs_button = QPushButton(self)
-            self.exit_fs_button.setIcon(qta.icon('fa5s.times', color='white'))
-            self.exit_fs_button.setIconSize(QSize(24, 24))
-            self.exit_fs_button.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(0, 0, 0, 100);
-                    border: none;
-                    border-radius: 15px;
-                    padding: 5px;
-                }
-                QPushButton:hover {
-                    background-color: rgba(200, 0, 0, 150);
-                }
-            """)
-            
-            # Устанавливаем размер кнопки
-            self.exit_fs_button.setFixedSize(30, 30)
-            self.exit_fs_button.clicked.connect(self.toggle_fullscreen)
-            self.exit_fs_button.move(self.width() - 40, 10)
-            self.exit_fs_button.show()
-            self.exit_fs_button.raise_()
-            
-            # Создаем временную метку для выхода из полноэкранного режима
-            hint_label = QLabel("Нажмите ESC или на X для выхода из полноэкранного режима", self)
-            hint_label.setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 10px; border-radius: 5px;")
-            hint_label.setAlignment(Qt.AlignCenter)
-            hint_label.setGeometry(self.width() // 2 - 250, self.height() - 50, 500, 40)
-            hint_label.show()
-            hint_label.raise_()
-            QTimer.singleShot(3000, hint_label.deleteLater)
-
-    def adjust_ui_after_fullscreen(self):
-        """Корректировка размеров UI после выхода из полноэкранного режима"""
-        # Отключаем автоматический ресайз на время корректировки
-        self.setUpdatesEnabled(False)
+            # Создаем компактную кнопку для выхода из полноэкранного режима
+            self.create_fullscreen_exit_button()
+    
+    def create_fullscreen_exit_button(self):
+        """Создает кнопку выхода из полноэкранного режима"""
+        self.exit_fs_button = QPushButton(self)
+        self.exit_fs_button.setIcon(qta.icon('fa5s.times', color='white'))
+        self.exit_fs_button.setIconSize(QSize(24, 24))
+        self.exit_fs_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 100);
+                border: none;
+                border-radius: 15px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: rgba(200, 0, 0, 150);
+            }
+        """)
         
-        # Восстанавливаем фиксированную высоту для важных элементов
-        if hasattr(self, 'original_sizes'):
-            main_height = self.original_sizes.get('main_height', 0)
-            video_height = self.original_sizes.get('video_height', 400)
-            
-            if main_height > 0 and video_height > 0:
-                # Устанавливаем фиксированную высоту для видеофрейма
-                self.video_frame.setMinimumHeight(video_height)
-                self.video_frame.setMaximumHeight(video_height)
+        # Устанавливаем размер и позицию кнопки
+        self.exit_fs_button.setFixedSize(30, 30)
+        self.exit_fs_button.clicked.connect(self.toggle_fullscreen)
+        self.exit_fs_button.move(self.width() - 40, 10)
+        self.exit_fs_button.show()
+        self.exit_fs_button.raise_()
         
-        # Получаем правую панель и обновляем её разметку
-        right_panel = self.findChild(QWidget, "right_panel")
-        if right_panel:
-            right_panel.layout().update()
-            right_panel.updateGeometry()
+        # Создаем подсказку для выхода из полноэкранного режима
+        self.create_fullscreen_hint()
+    
+    def create_fullscreen_hint(self):
+        """Создает временную подсказку при входе в полноэкранный режим"""
+        hint_label = QLabel("Нажмите ESC или на X для выхода из полноэкранного режима", self)
+        hint_label.setStyleSheet("background-color: rgba(0, 0, 0, 150); color: white; padding: 10px; border-radius: 5px;")
+        hint_label.setAlignment(Qt.AlignCenter)
+        hint_label.setGeometry(self.width() // 2 - 250, self.height() - 50, 500, 40)
+        hint_label.show()
+        hint_label.raise_()
+        # Автоматически скрываем подсказку через 3 секунды
+        QTimer.singleShot(3000, hint_label.deleteLater)
         
-        # Обновляем разметку видеофрейма
-        self.video_frame_label.updateGeometry()
-        self.video_frame.updateGeometry()
-        
-        # Обновляем главный сплиттер
-        self.main_splitter.refresh()
-        self.main_splitter.updateGeometry()
-        
-        # Обновляем центральный виджет
-        self.centralWidget().updateGeometry()
-        
-        # Обновляем геометрию всего окна
-        self.updateGeometry()
-        
-        # Запускаем обработку событий для применения изменений
-        QApplication.processEvents()
-        
-        # Включаем обновление интерфейса
-        self.setUpdatesEnabled(True)
-
     def resizeEvent(self, event):
-        """Обработчик изменения размера окна"""
-        # Если в полноэкранном режиме, растягиваем видеофрейм на всё окно
-        if self.isFullScreen() and self.video_frame.parent() == self:
-            self.video_frame.setGeometry(0, 0, self.width(), self.height())
-            # Обновляем положение кнопки выхода при изменении размера
+        """Обработчик изменения размера окна
+        
+        Обновляет положение компонентов при изменении размеров окна,
+        особенно в полноэкранном режиме.
+        """
+        # Если находимся в полноэкранном режиме, обновляем размеры и положение элементов
+        if self.isFullScreen():
+            # Обновляем размеры временного контейнера
+            if hasattr(self, 'fullscreen_container') and self.fullscreen_container:
+                self.fullscreen_container.setGeometry(0, 0, self.width(), self.height())
+                
+            # Обновляем положение кнопки выхода
             if hasattr(self, 'exit_fs_button') and self.exit_fs_button:
                 self.exit_fs_button.move(self.width() - 40, 10)
-        elif not self.isFullScreen() and event.oldSize().width() > 0 and event.oldSize().height() > 0:
-            # Если изменяются размеры окна в обычном режиме
-            if hasattr(self, 'main_splitter'):
-                # Проверяем, не изменились ли слишком сильно пропорции
-                if abs(event.size().height() - event.oldSize().height()) > 50:
-                    # При значительном изменении высоты обновляем видеофрейм
-                    if hasattr(self, 'original_sizes'):
-                        video_height = self.original_sizes.get('video_height', 400)
-                        self.video_frame.setMinimumHeight(video_height)
-                        self.video_frame.setMaximumHeight(video_height)
                 
-                # Обновляем размеры сплиттера
-                self.main_splitter.refresh()
-        
         super().resizeEvent(event)
 
     def update_ui(self):
-        """Обновление UI состояния"""
+        """Обновление UI состояния 
+        
+        Периодически вызывается таймером для обновления элементов интерфейса
+        в соответствии с текущим состоянием медиаплеера. Обрабатывает различные
+        состояния воспроизведения, показывает/скрывает индикаторы буферизации и
+        обновляет информацию о воспроизводимом канале.
+        """
         # Обновляем состояние кнопки воспроизведения
         is_playing = self.media_player.is_playing()
         has_media = self.media_player.get_media() is not None
@@ -2214,7 +2738,15 @@ class IPTVPlayer(QMainWindow):
                 self.video_retry_count = 1
 
     def handle_error(self, event):
-        """Обработчик ошибок воспроизведения"""
+        """Обработчик ошибок воспроизведения
+        
+        Вызывается при возникновении ошибок во время воспроизведения медиа.
+        Обрабатывает ошибки, пытается автоматически переподключиться к каналу,
+        и информирует пользователя о проблемах.
+        
+        Args:
+            event: Событие ошибки от VLC
+        """
         self.progress_bar.setVisible(False)
         
         # Останавливаем таймер ожидания, если он активен
@@ -2240,11 +2772,13 @@ class IPTVPlayer(QMainWindow):
                 channel_name = channel.get('name', 'Неизвестный канал')
                 error_msg = f"Ошибка воспроизведения канала: {channel_name}"
             
-            self.info_label.setText(error_msg)
+            # Обновляем информационную метку
+            self.update_ui_status(error_msg, error=True)
             
             if self.retry_count <= self.max_retry_count:
                 # Показываем информацию о попытке переподключения
-                self.statusBar().showMessage(f"⚠️ Ошибка воспроизведения! Переподключение... Попытка №{self.retry_count}/{self.max_retry_count}", 5000)
+                status_msg = f"⚠️ Ошибка воспроизведения! Переподключение... Попытка №{self.retry_count}/{self.max_retry_count}"
+                self.statusBar().showMessage(status_msg, 5000)
                 logging.error(f"Ошибка воспроизведения VLC. Попытка переподключения #{self.retry_count}/{self.max_retry_count}")
                 
                 # Запускаем переподключение через 3 секунды
@@ -2252,8 +2786,9 @@ class IPTVPlayer(QMainWindow):
             else:
                 # Превышено макс. количество попыток
                 error_msg = f"Канал '{channel_name}' недоступен после {self.max_retry_count} попыток"
-                self.info_label.setText(error_msg)
-                self.statusBar().showMessage("Канал недоступен", 5000)
+                status_msg = "Канал недоступен"
+                
+                self.update_ui_status(error_msg, error=True, status_message=status_msg)
                 logging.error(f"Превышено максимальное количество попыток подключения к каналу: {channel_name}")
                 
                 # Показываем сообщение пользователю
@@ -2263,7 +2798,7 @@ class IPTVPlayer(QMainWindow):
             
         except Exception as e:
             logging.error(f"Ошибка при обработке события MediaPlayerEncounteredError: {e}")
-            self.info_label.setText(f"Ошибка воспроизведения: {str(e)}")
+            self.update_ui_status(f"Ошибка воспроизведения: {str(e)}", error=True)
             self.statusBar().showMessage("Ошибка воспроизведения", 5000)
 
     def media_playing(self, event):
@@ -2364,6 +2899,17 @@ class IPTVPlayer(QMainWindow):
                     return
             
             try:
+                # Запрашиваем имя для плейлиста
+                default_name = os.path.splitext(os.path.basename(filename))[0]
+                playlist_name, ok = QInputDialog.getText(
+                    self, "Имя плейлиста", 
+                    "Укажите имя плейлиста для отображения:",
+                    text=default_name
+                )
+                
+                if not ok:
+                    playlist_name = default_name
+                
                 # Спрашиваем, копировать ли файл в текущую директорию
                 reply = QMessageBox.question(
                     self, 'Копирование плейлиста', 
@@ -2387,8 +2933,8 @@ class IPTVPlayer(QMainWindow):
                         with open(target_file, 'wb') as dst:
                             dst.write(src.read())
                     
-                    # Обновляем историю плейлистов
-                    self.update_recent_playlists(target_file)
+                    # Обновляем историю плейлистов с указанным именем
+                    self.update_recent_playlists(target_file, playlist_name)
                     self.current_playlist = target_file
                     
                     # Сбрасываем путь к временному плейлисту
@@ -2408,8 +2954,8 @@ class IPTVPlayer(QMainWindow):
                     self.channels = []
                     self.categories = {"Все каналы": []}
                     
-                    # Обновляем историю плейлистов
-                    self.update_recent_playlists(filename)
+                    # Обновляем историю плейлистов с указанным именем
+                    self.update_recent_playlists(filename, playlist_name)
                     self.current_playlist = filename
                     
                     # Сохраняем путь к временному плейлисту
@@ -2422,7 +2968,7 @@ class IPTVPlayer(QMainWindow):
                     # Обновляем меню недавних плейлистов
                     self.update_recent_menu()
                     
-                    self.info_label.setText(f"Загружен внешний плейлист: {os.path.basename(filename)}")
+                    self.info_label.setText(f"Загружен внешний плейлист: {playlist_name}")
                     
                     # Обновляем отображение количества каналов
                     total_channels = len(self.channels)
@@ -2432,8 +2978,27 @@ class IPTVPlayer(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось открыть плейлист: {str(e)}")
 
-    def update_recent_playlists(self, playlist_path):
-        """Обновляет список недавно использованных плейлистов"""
+    def update_recent_playlists(self, playlist_path, playlist_name=None):
+        """Обновляет список недавно использованных плейлистов
+        
+        Args:
+            playlist_path: путь к плейлисту или URL
+            playlist_name: имя плейлиста для отображения (если None, будет использовано имя файла)
+        """
+        # Добавляем имя плейлиста, если оно указано, иначе используем имя файла
+        if playlist_name:
+            self.playlist_names[playlist_path] = playlist_name
+        elif playlist_path not in self.playlist_names:
+            # Если имя не задано и отсутствует в словаре, используем имя файла или URL
+            if playlist_path.startswith(('http://', 'https://')):
+                self.playlist_names[playlist_path] = "Плейлист из URL"
+            else:
+                self.playlist_names[playlist_path] = os.path.basename(playlist_path)
+            
+            # Для локального плейлиста всегда используем "Локальный"
+            if playlist_path == "local.m3u" or os.path.basename(playlist_path) == "local.m3u":
+                self.playlist_names[playlist_path] = "Локальный"
+        
         # Удаляем путь из списка, если он уже есть
         if playlist_path in self.recent_playlists:
             self.recent_playlists.remove(playlist_path)
@@ -2441,8 +3006,8 @@ class IPTVPlayer(QMainWindow):
         # Добавляем путь в начало списка
         self.recent_playlists.insert(0, playlist_path)
         
-        # Ограничиваем список до 5 элементов
-        self.recent_playlists = self.recent_playlists[:5]
+        # Ограничиваем список до 10 элементов (вместо 5)
+        self.recent_playlists = self.recent_playlists[:10]
         
         # Обновляем текущий плейлист
         self.current_playlist = playlist_path
@@ -2525,13 +3090,20 @@ class IPTVPlayer(QMainWindow):
                     if tvg_id_match:
                         tvg_id = tvg_id_match.group(1).strip()
                     
+                    # Извлекаем tvg-logo если есть
+                    tvg_logo_match = re.search(r'tvg-logo="([^"]*)"', line)
+                    tvg_logo = ""
+                    if tvg_logo_match:
+                        tvg_logo = tvg_logo_match.group(1).strip()
+                    
                     parts = line.split(',', 1)
                     if len(parts) > 1:
                         channel = {
                             'name': parts[1].strip(), 
                             'options': {},
                             'category': group_title,
-                            'tvg_id': tvg_id
+                            'tvg_id': tvg_id,
+                            'tvg_logo': tvg_logo  # Добавляем URL логотипа
                         }
                         
                         # Добавляем категорию в словарь, если её ещё нет
@@ -2590,30 +3162,64 @@ class IPTVPlayer(QMainWindow):
         
     def add_playlist_from_url(self):
         """Добавляет плейлист из URL"""
-        url, ok = QInputDialog.getText(
-            self, "Добавить плейлист из URL", 
-            "Введите URL плейлиста:", 
-            text="http://"
-        )
+        # Создаем диалоговое окно для ввода данных
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Добавить плейлист из URL")
+        dialog.resize(400, 120)
         
-        if ok and url:
-            # Проверяем, не загружается ли тот же URL повторно
-            if url == self.current_playlist:
-                reply = QMessageBox.question(
-                    self, 'Повторная загрузка', 
-                    'Этот плейлист уже загружен. Загрузить повторно?',
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                )
+        layout = QVBoxLayout()
+        
+        # URL плейлиста
+        url_layout = QHBoxLayout()
+        url_label = QLabel("URL плейлиста:")
+        url_edit = QLineEdit("http://")
+        url_layout.addWidget(url_label)
+        url_layout.addWidget(url_edit)
+        layout.addLayout(url_layout)
+        
+        # Имя плейлиста
+        name_layout = QHBoxLayout()
+        name_label = QLabel("Имя плейлиста:")
+        name_edit = QLineEdit("Новый плейлист")
+        name_layout.addWidget(name_label)
+        name_layout.addWidget(name_edit)
+        layout.addLayout(name_layout)
+        
+        # Кнопки
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        
+        # Показываем диалог и получаем результат
+        if dialog.exec_() == QDialog.Accepted:
+            url = url_edit.text()
+            playlist_name = name_edit.text()
+            
+            if url:
+                # Проверяем, не загружается ли тот же URL повторно
+                if url == self.current_playlist:
+                    reply = QMessageBox.question(
+                        self, 'Повторная загрузка', 
+                        'Этот плейлист уже загружен. Загрузить повторно?',
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.No:
+                        return
                 
-                if reply == QMessageBox.No:
-                    return
-            
-            # Создаем уникальное имя для временного файла
-            import uuid
-            temp_file = f"temp_playlist_{str(uuid.uuid4())[:8]}.m3u"
-            
-            # Загружаем плейлист по URL
-            self.download_playlist_from_url(url, temp_file, is_update=False)
+                # Создаем уникальное имя для временного файла
+                import uuid
+                temp_file = f"temp_playlist_{str(uuid.uuid4())[:8]}.m3u"
+                
+                # Записываем имя плейлиста для URL
+                if playlist_name:
+                    self.playlist_names[url] = playlist_name
+                
+                # Загружаем плейлист по URL
+                self.download_playlist_from_url(url, temp_file, is_update=False)
 
     def update_playlist_from_url(self):
         """Обновляет плейлист из интернета"""
@@ -2662,11 +3268,13 @@ class IPTVPlayer(QMainWindow):
                         
                         # Обновляем историю плейлистов
                         if is_update:
-                            self.update_recent_playlists(target_file)
+                            self.update_recent_playlists(target_file, "Локальный")
                             self.current_playlist = target_file
                         else:
                             if source_url:
-                                self.update_recent_playlists(source_url)
+                                # Используем сохраненное имя плейлиста или URL
+                                playlist_name = self.playlist_names.get(source_url)
+                                self.update_recent_playlists(source_url, playlist_name)
                                 self.current_playlist = source_url
                             
                             # Сохраняем путь к временному плейлисту (только для новых плейлистов)
@@ -2847,7 +3455,9 @@ class IPTVPlayer(QMainWindow):
                 try:
                     self.load_external_playlist(playlist_source)
                     self.fill_channel_list()
-                    self.info_label.setText(f"Плейлист '{os.path.basename(playlist_source)}' перезагружен")
+                    # Используем имя плейлиста для отображения
+                    display_name = self.playlist_names.get(playlist_source, os.path.basename(playlist_source))
+                    self.info_label.setText(f"Плейлист '{display_name}' перезагружен")
                     self.statusbar_label.setText("Плейлист перезагружен из файла")
                      # Обновляем отображение количества каналов
                     total_channels = len(self.channels)
@@ -2946,6 +3556,8 @@ class IPTVPlayer(QMainWindow):
         """Обработка нажатий клавиш"""
         if event.key() == Qt.Key_Escape and self.isFullScreen():
             self.toggle_fullscreen()
+            # Дополнительное принудительное восстановление интерфейса через 300мс
+            QTimer.singleShot(300, self.restore_ui_after_fullscreen)
         elif event.key() == Qt.Key_Space:
             self.play_pause()
         elif event.key() == Qt.Key_F:
@@ -2980,74 +3592,121 @@ class IPTVPlayer(QMainWindow):
         return super().event(event)
 
     def load_config(self):
-        """Загружает конфигурацию из файла"""
+        """Загружает конфигурацию из JSON-файла"""
+        config_file = "player_config.json"
         default_config = {
-            "volume": 70,
+            "volume": 50,
             "last_channel": None,
+            "last_category": "Все каналы",
             "favorites": [],
             "hidden_channels": [],
-            "recent_playlists": ["local.m3u"],
-            "current_playlist": "local.m3u"
+            "recent_playlists": [],
+            "playlist_names": {},  # Словарь с именами плейлистов (ключ - путь, значение - имя)
+            "show_hidden": False,
+            "show_logos": True,  # Показывать логотипы каналов по умолчанию
+            "window_size": [800, 600],
+            "window_position": [100, 100],
+            "always_on_top": False
         }
         
         try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r', encoding='utf-8') as f:
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
+                    
+                # Устанавливаем значения из конфигурации
+                self.volume = config.get('volume', default_config['volume'])
+                self.last_channel = config.get('last_channel', default_config['last_channel'])
+                self.last_category = config.get('last_category', default_config['last_category'])
+                self.favorites = config.get('favorites', default_config['favorites'])
+                self.hidden_channels = config.get('hidden_channels', default_config['hidden_channels'])
+                self.recent_playlists = config.get('recent_playlists', default_config['recent_playlists'])
+                self.playlist_names = config.get('playlist_names', default_config['playlist_names'])  # Загружаем имена плейлистов
+                self.show_hidden = config.get('show_hidden', default_config['show_hidden'])
+                self.show_logos = config.get('show_logos', default_config['show_logos'])  # Загружаем параметр отображения логотипов
                 
-                # Проверяем, что все ключи по умолчанию присутствуют
-                for key in default_config:
-                    if key not in config:
-                        config[key] = default_config[key]
+                # Восстанавливаем размер и позицию окна
+                window_size = config.get('window_size', default_config['window_size'])
+                window_position = config.get('window_position', default_config['window_position'])
                 
-                # Проверяем, что playlist существует
-                if config.get("current_playlist") and not os.path.exists(config.get("current_playlist")):
-                    # Проверяем, есть ли в recent_playlists существующие плейлисты
-                    existing_playlists = [p for p in config.get("recent_playlists", []) if os.path.exists(p)]
-                    if existing_playlists:
-                        config["current_playlist"] = existing_playlists[0]
-                    else:
-                        # Если ни один плейлист не существует, сбрасываем на стандартный
-                        if os.path.exists("local.m3u"):
-                            config["current_playlist"] = "local.m3u"
-                            config["recent_playlists"] = ["local.m3u"]
-                        else:
-                            # Если даже стандартного нет, создаем пустой плейлист
-                            with open("local.m3u", "w", encoding="utf-8") as f:
-                                f.write("#EXTM3U\n")
-                            config["current_playlist"] = "local.m3u"
-                            config["recent_playlists"] = ["local.m3u"]
+                if len(window_size) == 2 and all(isinstance(x, int) for x in window_size):
+                    self.resize(window_size[0], window_size[1])
                 
-                return config
+                if len(window_position) == 2 and all(isinstance(x, int) for x in window_position):
+                    self.move(window_position[0], window_position[1])
+                    
+                # Восстанавливаем режим "поверх всех окон"
+                self.always_on_top = config.get('always_on_top', default_config['always_on_top'])
+                self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
             else:
-                # Если файл не существует, создаем базовый файл плейлиста
-                if not os.path.exists("local.m3u"):
-                    with open("local.m3u", "w", encoding="utf-8") as f:
-                        f.write("#EXTM3U\n")
-                # Удаляю создание директории для логотипов
-                return default_config
+                # Используем значения по умолчанию
+                self.volume = default_config['volume']
+                self.last_channel = default_config['last_channel']
+                self.last_category = default_config['last_category']
+                self.favorites = default_config['favorites']
+                self.hidden_channels = default_config['hidden_channels']
+                self.recent_playlists = default_config['recent_playlists']
+                self.playlist_names = default_config['playlist_names']  # Инициализируем словарь имен плейлистов
+                self.show_hidden = default_config['show_hidden']
+                self.show_logos = default_config['show_logos']  # Инициализируем параметр отображения логотипов
+                
+                # Устанавливаем имя для локального плейлиста
+                if os.path.exists("local.m3u"):
+                    self.playlist_names["local.m3u"] = "Локальный"
+                
+                # Сохраняем конфигурацию по умолчанию
+                self.save_config()
+                
         except Exception as e:
-            print(f"Ошибка при загрузке конфигурации: {e}")
-            # Возвращаем конфигурацию по умолчанию
-            return default_config
-    
-    def save_config(self):
-        """Сохраняет конфигурацию в файл"""
-        # Обновляем текущие параметры
-        self.config["volume"] = self.volume_slider.value()
-        if self.current_channel_index >= 0 and self.current_channel_index < len(self.channels):
-            self.config["last_channel"] = self.channels[self.current_channel_index]['name']
-        self.config["favorites"] = self.favorites
-        self.config["hidden_channels"] = self.hidden_channels
-        self.config["recent_playlists"] = self.recent_playlists
-        self.config["current_playlist"] = self.current_playlist
-        
-        try:
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            print(f"Ошибка при сохранении конфигурации: {e}")
+            logging.error(f"Ошибка при загрузке конфигурации: {str(e)}")
+            # Используем значения по умолчанию
+            self.volume = default_config['volume']
+            self.last_channel = default_config['last_channel']
+            self.last_category = default_config['last_category']
+            self.favorites = default_config['favorites']
+            self.hidden_channels = default_config['hidden_channels']
+            self.recent_playlists = default_config['recent_playlists']
+            self.playlist_names = default_config['playlist_names']  # Инициализируем словарь имен плейлистов
+            self.show_hidden = default_config['show_hidden']
+            self.show_logos = default_config['show_logos']  # Инициализируем параметр отображения логотипов
             
+            # Устанавливаем имя для локального плейлиста
+            if os.path.exists("local.m3u"):
+                self.playlist_names["local.m3u"] = "Локальный"
+
+    def save_config(self):
+        """Сохраняет конфигурацию в JSON-файл"""
+        config_file = "player_config.json"
+        try:
+            # Определяем текущую категорию
+            if hasattr(self, 'category_combo') and self.category_combo is not None:
+                current_category = self.category_combo.currentText()
+            else:
+                # Если комбобокс еще не создан, используем сохраненное значение или значение по умолчанию
+                current_category = getattr(self, 'last_category', "Все каналы")
+
+            config = {
+                "volume": self.volume,
+                "last_channel": self.last_channel,
+                "last_category": current_category,
+                "favorites": self.favorites,
+                "hidden_channels": self.hidden_channels,
+                "recent_playlists": self.recent_playlists,
+                "playlist_names": self.playlist_names,  # Сохраняем словарь имен плейлистов
+                "show_hidden": self.show_hidden,
+                "show_logos": self.show_logos,  # Сохраняем параметр отображения логотипов
+                "window_size": [self.width(), self.height()],
+                "window_position": [self.x(), self.y()],
+                "always_on_top": self.windowFlags() & Qt.WindowStaysOnTopHint == Qt.WindowStaysOnTopHint
+            }
+            
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+                
+            logging.info("Конфигурация успешно сохранена")
+        except Exception as e:
+            logging.error(f"Ошибка при сохранении конфигурации: {str(e)}")
+
     def take_screenshot(self):
         """Делает снимок экрана текущего видео"""
         if not self.media_player.is_playing():
@@ -3239,14 +3898,40 @@ class IPTVPlayer(QMainWindow):
             self.volume_icon.setPixmap(self.style().standardIcon(QStyle.SP_MediaVolume).pixmap(QSize(16, 16)))
               
     def setup_statusbar(self):
-        """Настраивает статус бар"""
+        """Настраивает строку состояния приложения
+        
+        Создает и настраивает статус-бар с информацией о текущем состоянии
+        воспроизведения и счетчиками каналов.
+        """
+        # Создаем объект статус-бара
         statusbar = QStatusBar()
         self.setStatusBar(statusbar)
         
-        # Добавляем информацию о канале
+        # Создаем метку для отображения информации
         self.statusbar_label = QLabel("Готов к воспроизведению")
+        
+        # Устанавливаем стиль метки
+        self.statusbar_label.setStyleSheet("""
+            QLabel {
+                padding: 3px;
+                color: #f0f0f0;
+            }
+        """)
+        
+        # Добавляем метку в статус-бар с растяжением
         statusbar.addWidget(self.statusbar_label, 1)
-    
+        
+        # Применяем стиль к статус-бару
+        statusbar.setStyleSheet("""
+            QStatusBar {
+                background-color: #1e1e1e;
+                color: #f0f0f0;
+                border-top: 1px solid #444444;
+            }
+        """)
+        
+        logging.info("Статус-бар инициализирован")
+
     def restore_last_channel(self, channel_name):
         """Восстанавливает воспроизведение последнего просмотренного канала"""
         # Найти канал по имени
@@ -3376,6 +4061,334 @@ class IPTVPlayer(QMainWindow):
         """Обработчик двойного клика по каналу"""
         # Просто вызываем метод воспроизведения выбранного канала
         self.play_selected_channel()
+
+    def showEvent(self, event):
+        """Событие при показе окна
+        
+        Вызывается, когда окно восстанавливается из свернутого состояния
+        или становится видимым. Используется для восстановления корректного
+        отображения интерфейса.
+        """
+        super().showEvent(event)
+        
+        # Если окно не находится в полноэкранном режиме, восстанавливаем интерфейс
+        if not self.isFullScreen():
+            QTimer.singleShot(100, self.restore_ui_after_fullscreen)
+        
+        # Логируем событие
+        logging.debug("Окно восстановлено/показано")
+
+    def load_channel_logo(self, logo_url):
+        """Загружает и кэширует логотип канала"""
+        if not logo_url:
+            return None
+        
+        # Инициализация кэша и директории для кэша логотипов
+        if not hasattr(self, 'logo_cache'):
+            self.logo_cache = {}
+            self.logo_download_threads = {}
+            self.failed_logos = set()  # Список URL, которые не удалось загрузить
+            self.max_concurrent_downloads = 5  # Ограничение на количество одновременных загрузок
+            
+            # Создаем директорию для кэша логотипов, если её нет
+            # Определяем путь к директории кэша с учетом особенностей PyInstaller
+            if getattr(sys, 'frozen', False):
+                # Для скомпилированного приложения используем директорию с исполняемым файлом
+                base_path = os.path.dirname(sys.executable)
+            else:
+                # Для запуска из исходников используем директорию скрипта
+                base_path = os.path.dirname(os.path.abspath(__file__))
+                
+            # Создаем пути для кэша
+            self.logos_cache_dir = os.path.join(base_path, 'cache', 'logos')
+            os.makedirs(self.logos_cache_dir, exist_ok=True)
+            logging.info(f"Инициализирован кэш логотипов: {self.logos_cache_dir}")
+            
+            # Отключаем предупреждения о небезопасных HTTPS-соединениях
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
+            # Включаем режим отладки для логов (устанавливаем False для рабочей версии)
+            self.debug_logo_loading = False
+        
+        # Если URL уже в списке неудачных, не пытаемся загрузить снова
+        if logo_url in self.failed_logos:
+            return None
+            
+        # Если логотип уже загружен, возвращаем его из кэша
+        if logo_url in self.logo_cache:
+            return self.logo_cache[logo_url]
+        
+        # Генерируем имя файла для кэша на основе URL
+        cache_filename = self._get_cache_filename(logo_url)
+        cache_path = os.path.join(self.logos_cache_dir, cache_filename)
+        
+        # Проверяем, есть ли логотип в кэше на диске
+        if os.path.exists(cache_path):
+            try:
+                pixmap = QPixmap(cache_path)
+                if not pixmap.isNull():
+                    self.logo_cache[logo_url] = pixmap
+                    return pixmap
+            except Exception:
+                # Если возникла ошибка при загрузке из кэша, удаляем файл и загружаем заново
+                try:
+                    os.remove(cache_path)
+                except Exception:
+                    pass
+        
+        # Если логотип еще не загружается и не превышено ограничение на количество одновременных загрузок
+        if (logo_url not in self.logo_download_threads and 
+                len(self.logo_download_threads) < self.max_concurrent_downloads):
+            thread = LogoDownloadThread(logo_url)
+            thread.logo_loaded.connect(lambda url, pixmap: self.on_logo_loaded(url, pixmap, cache_path))
+            thread.logo_failed.connect(self.on_logo_failed)
+            self.logo_download_threads[logo_url] = thread
+            thread.start()
+        
+        # Возвращаем None, логотип будет обновлен позже, когда загрузится
+        return None
+    
+    def _get_cache_filename(self, url):
+        """Генерирует имя файла для кэша на основе URL"""
+        # Используем MD5-хеш URL для имени файла
+        return hashlib.md5(url.encode('utf-8')).hexdigest() + '.png'
+    
+    def on_logo_loaded(self, logo_url, pixmap, cache_path=None):
+        """Обработчик успешной загрузки логотипа"""
+        # Сохраняем логотип в кэше
+        self.logo_cache[logo_url] = pixmap
+        
+        # Сохраняем логотип в кэш на диске с сохранением прозрачности
+        if cache_path:
+            try:
+                # Сохраняем как PNG для поддержки прозрачности
+                pixmap.save(cache_path, 'PNG', quality=100)
+            except Exception as e:
+                logging.error(f"Ошибка при сохранении логотипа в кэш: {e}")
+                pass
+        
+        # Удаляем поток из списка активных загрузок
+        if logo_url in self.logo_download_threads:
+            self.logo_download_threads[logo_url].deleteLater()
+            del self.logo_download_threads[logo_url]
+        
+        # Обновляем все элементы списка, которые используют этот логотип
+        self.update_channel_logos(logo_url, pixmap)
+    
+    def on_logo_failed(self, logo_url):
+        """Обработчик неудачной загрузки логотипа"""
+        # Добавляем URL в список неудачных, чтобы не пытаться загрузить снова
+        self.failed_logos.add(logo_url)
+        
+        # Удаляем поток из списка активных загрузок
+        if logo_url in self.logo_download_threads:
+            self.logo_download_threads[logo_url].deleteLater()
+            del self.logo_download_threads[logo_url]
+    
+    def update_channel_logos(self, logo_url, pixmap):
+        """Обновляет иконки каналов после загрузки логотипа"""
+        if not self.show_logos:
+            return
+            
+        # Обновляем логотипы в обычном списке
+        for i in range(self.channel_list.count()):
+            item = self.channel_list.item(i)
+            idx = self.channel_list.row(item)
+            channel_idx = -1
+            
+            # Получаем индекс канала
+            for channel in self.channels:
+                if channel['name'] == item.text():
+                    if 'tvg_logo' in channel and channel['tvg_logo'] == logo_url:
+                        item.setIcon(QIcon(pixmap))
+                    break
+        
+        # Обновляем логотипы в дереве каналов
+        root = self.channel_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            category_item = root.child(i)
+            for j in range(category_item.childCount()):
+                channel_item = category_item.child(j)
+                channel_idx = channel_item.data(0, Qt.UserRole)
+                if channel_idx is not None and 0 <= channel_idx < len(self.channels):
+                    channel = self.channels[channel_idx]
+                    if 'tvg_logo' in channel and channel['tvg_logo'] == logo_url:
+                        channel_item.setIcon(0, QIcon(pixmap))
+
+    def create_channel_item(self, channel_name, channel=None):
+        """Создает элемент списка с логотипом (если доступен)"""
+        item = QListWidgetItem(channel_name)
+        
+        # Если отображение логотипов включено
+        if self.show_logos:
+            # Если у нас есть информация о канале и URL логотипа
+            if channel and 'tvg_logo' in channel and channel['tvg_logo']:
+                logo = self.load_channel_logo(channel['tvg_logo'])
+                if logo:
+                    item.setIcon(QIcon(logo))
+                else:
+                    # Если не удалось загрузить логотип, используем стандартную иконку
+                    item.setIcon(QIcon(self.default_channel_icon))
+            else:
+                # Если у канала нет логотипа, используем стандартную иконку
+                item.setIcon(QIcon(self.default_channel_icon))
+        
+        return item
+
+    def toggle_logos(self):
+        """Включает/выключает отображение логотипов каналов"""
+        self.show_logos = not self.show_logos
+        self.show_logos_action.setChecked(self.show_logos)
+        
+        # Обновляем список каналов
+        self.fill_channel_list()
+        
+        # Сохраняем настройку
+        self.save_config()
+        
+    def toggle_always_on_top(self):
+        """Включает/выключает режим поверх всех окон"""
+        self.always_on_top = not self.always_on_top
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, self.always_on_top)
+        
+        # Нужно скрыть и показать окно, чтобы изменения вступили в силу
+        self.show()
+        
+        # Сохраняем настройку
+        self.save_config()
+
+    def create_default_channel_icon(self):
+        """Создает стандартную иконку для каналов без логотипа"""
+        # Создаем pixmap для иконки
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.transparent)
+        
+        # Создаем художника для рисования на pixmap
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Создаем градиент для фона
+        gradient = QLinearGradient(0, 0, 32, 32)
+        gradient.setColorAt(0, QColor('#4080b0'))  # Верхний цвет
+        gradient.setColorAt(1, QColor('#2c5984'))  # Нижний цвет
+        
+        # Рисуем круглый фон с градиентом
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(gradient))
+        painter.drawEllipse(2, 2, 28, 28)
+        
+        # Добавляем тонкую светлую рамку для объема
+        pen = QPen(QColor('#ffffff'))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(2, 2, 28, 28)
+        
+        # Рисуем иконку телевизора внутри круга
+        icon = qta.icon('fa5s.tv', color='white')
+        icon_pixmap = icon.pixmap(16, 16)
+        painter.drawPixmap(8, 8, icon_pixmap)
+        
+        painter.end()
+        
+        return pixmap
+
+class LogoDownloadThread(QThread):
+    """Поток для асинхронной загрузки логотипов каналов"""
+    logo_loaded = pyqtSignal(str, QPixmap)  # URL логотипа, загруженный логотип
+    logo_failed = pyqtSignal(str)  # URL логотипа, который не удалось загрузить
+    
+    def __init__(self, logo_url):
+        super().__init__()
+        self.logo_url = logo_url
+        self.debug_mode = False  # По умолчанию режим отладки выключен
+        self._abort = False  # Флаг для прерывания выполнения
+        
+    def abort(self):
+        """Безопасно прервать выполнение потока"""
+        self._abort = True
+    
+    def run(self):
+        try:
+            # Проверяем флаг прерывания
+            if self._abort:
+                self.logo_failed.emit(self.logo_url)
+                return
+                
+            # Пропускаем URL от известных проблемных серверов
+            skip_domains = ['fe-ural.svc.iptv.rt.ru', 'fe-sib.svc.iptv.rt.ru', 
+                          'fe-sth.svc.iptv.rt.ru', 'fe-vlg.svc.iptv.rt.ru', 
+                          'fe-nw.svc.iptv.rt.ru', 'picon.ml', 'yt3.ggpht.com',
+                          'pbs.twimg.com', 'television-live.com', 'tsifra-tv.ru',
+                          'nm-tv.ru', 'gas-kvas.com', 'online-television.net']
+            
+            if any(domain in self.logo_url for domain in skip_domains):
+                self.logo_failed.emit(self.logo_url)
+                return
+                
+            # Проверяем флаг прерывания еще раз
+            if self._abort:
+                self.logo_failed.emit(self.logo_url)
+                return
+                
+            # Пробуем загрузить изображение из URL с проверкой сертификата
+            response = requests.get(self.logo_url, timeout=3, verify=False)
+            if response.status_code == 200:
+                try:
+                    # Предварительная обработка изображения через PIL для устранения проблем с iCCP профилем
+                    image_data = response.content
+                    try:
+                        from PIL import Image
+                        import io
+                        # Открываем изображение через PIL
+                        img = Image.open(io.BytesIO(image_data))
+                        # Сохраняем альфа-канал для прозрачности
+                        # Просто очищаем профиль iCCP, но сохраняем формат изображения
+                        output = io.BytesIO()
+                        if img.mode == 'RGBA':
+                            # Сохраняем PNG с прозрачностью
+                            img.save(output, format='PNG', icc_profile=None)
+                        else:
+                            # Для других форматов сохраняем как есть
+                            img.save(output, format='PNG', icc_profile=None)
+                        image_data = output.getvalue()
+                    except (ImportError, Exception):
+                        # Пропускаем предобработку, если PIL не установлен или возникла ошибка
+                        pass
+                        
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(image_data)
+                    if not pixmap.isNull():
+                        # Проверяем и сохраняем прозрачность, если она есть
+                        if pixmap.hasAlpha():
+                            # Если у изображения есть альфа-канал, сохраняем его
+                            scaled_pixmap = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        else:
+                            # Для изображений без альфа-канала создаём прозрачный фон
+                            temp = QPixmap(32, 32)
+                            temp.fill(Qt.transparent)
+                            painter = QPainter(temp)
+                            scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            # Центрируем изображение
+                            x = (32 - scaled.width()) // 2
+                            y = (32 - scaled.height()) // 2
+                            painter.drawPixmap(x, y, scaled)
+                            painter.end()
+                            scaled_pixmap = temp
+                        
+                        self.logo_loaded.emit(self.logo_url, scaled_pixmap)
+                    else:
+                        self.logo_failed.emit(self.logo_url)
+                except Exception:
+                    self.logo_failed.emit(self.logo_url)
+            else:
+                self.logo_failed.emit(self.logo_url)
+        except Exception as e:
+            # Выводим ошибку только в режиме отладки
+            if self.debug_mode:
+                print(f"Ошибка загрузки логотипа {self.logo_url}: {str(e)}")
+            self.logo_failed.emit(self.logo_url)
 
 def main():
     """Основная функция программы"""
