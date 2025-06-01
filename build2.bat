@@ -1,0 +1,1 @@
+ pyinstaller --onefile --windowed --name=MaksIPTV_Player --icon=maksiptv.ico --add-data=threads.py;. --add-data=local.m3u;. --hidden-import=vlc --hidden-import=qtawesome --hidden-import=requests --hidden-import=PIL --clean main.py

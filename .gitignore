@@ -1,0 +1,48 @@
+# Игнорировать байт-код Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Игнорировать виртуальные окружения
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+
+# Игнорировать файлы журналов
+*.log
+
+# Игнорировать настройки IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Игнорировать файлы тестов и отчетов
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Игнорировать скомпилированные и временные файлы
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Игнорировать Jupyter ноутбуки (опционально)
+.ipynb_checkpoints/
+
+# Игнорировать системные файлы
+.DS_Store
+Thumbs.db
+
+cache/
+logs/

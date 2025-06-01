@@ -1,0 +1,27 @@
+{
+    "volume": 70,
+    "last_channel": "Россия 1 HD",
+    "last_category": "Эфирные",
+    "favorites": [],
+    "hidden_channels": [],
+    "recent_playlists": [
+        "local.m3u",
+        "D:/py_projects/iptv_vers/3/adult.m3u"
+    ],
+    "playlist_names": {
+        "local.m3u": "Локальный",
+        "D:/py_projects/iptv_vers/3/adult.m3u": "Взрщслые",
+        "D:/py_projects/iptv_vers/0.13/test_playlist.m3u": "test_playlist"
+    },
+    "show_hidden": false,
+    "show_logos": true,
+    "window_size": [
+        1185,
+        650
+    ],
+    "window_position": [
+        99,
+        43
+    ],
+    "always_on_top": false
+}

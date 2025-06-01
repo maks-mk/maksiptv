@@ -1,0 +1,6 @@
+python-vlc
+PyQt5
+qtawesome
+requests
+Pillow
+pyinstaller

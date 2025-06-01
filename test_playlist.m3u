@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1,Тестовый канал 1
+http://example.com/stream1.m3u8
+#EXTINF:-1,Тестовый канал 2
+http://example.com/stream2.m3u8
+#EXTINF:-1,Тестовый канал 3
+http://example.com/stream3.m3u8
