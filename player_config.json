@@ -1,11 +1,26 @@
 {
-    "volume": 100,
+    "volume": 50,
     "last_channel": "Россия 1 HD",
+    "last_category": "Эфирные",
     "favorites": [],
     "hidden_channels": [],
     "recent_playlists": [
-        "http://493f65d59319.yourlistbest.net/playlists/uplist/a16354737129a4d2aca8e205ccbb3b4a/playlist.m3u8",
-        "local.m3u"
+        "local.m3u",
+        "D:/py_projects/m3u8_dubl_del/1/dist/kino18-dubl.m3u"
     ],
-    "current_playlist": "http://493f65d59319.yourlistbest.net/playlists/uplist/a16354737129a4d2aca8e205ccbb3b4a/playlist.m3u8"
+    "playlist_names": {
+        "local.m3u": "Локальный",
+        "D:/py_projects/m3u8_dubl_del/1/dist/kino18-dubl.m3u": "kino18-dubl"
+    },
+    "show_hidden": false,
+    "show_logos": true,
+    "window_size": [
+        1366,
+        715
+    ],
+    "window_position": [
+        0,
+        23
+    ],
+    "always_on_top": false
 }
